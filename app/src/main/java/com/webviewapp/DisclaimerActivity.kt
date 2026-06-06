@@ -78,6 +78,9 @@ class DisclaimerActivity : AppCompatActivity() {
 
         btnDecline.setOnClickListener { finishAffinity() }
         btnAccept.setOnClickListener {
+            // 记录已同意，下次启动不再显示
+            getSharedPreferences("app_prefs", MODE_PRIVATE)
+                .edit().putBoolean("disc_agreed", true).apply()
             startActivity(Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
             })
