@@ -59,11 +59,7 @@ async function handleStatus(request, env) {
       `/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/build.yml/runs?event=workflow_dispatch&per_page=20`
     );
     const runs = await runsRes.json();
-    const baseTs = dispatchedAt ? Date.parse(dispatchedAt) : Date.now();
-    const matched = (runs.workflow_runs || []).find(r => {
-      const created = Date.parse(r.created_at || 0);
-      return Number.isFinite(created) && created >= (baseTs - 15000);
-    });
+    const matched = (runs.workflow_runs || []).find(r => (r.display_title || '').includes(buildId));
     if (!matched) return json({ status: 'queued', waiting_run_id: true, build_id: buildId, dispatched_at });
     runId = matched.id;
   }

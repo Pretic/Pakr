@@ -1,4 +1,5 @@
 name: Build APK
+run-name: Build ${{ inputs.build_id }} / ${{ inputs.package_name }}
 on:
   workflow_dispatch:
     inputs:
@@ -107,13 +108,18 @@ jobs:
           find app/build/outputs/apk -name '*.apk' 2>/dev/null || echo "No APKs found"
           KS_B64="${{ secrets.KEYSTORE_BASE64 }}"
           if [ -n "$KS_B64" ]; then
+            echo "Using configured GitHub Actions keystore secrets."
             echo "$KS_B64" | base64 --decode > /tmp/release.keystore
             KS_PASS="${{ secrets.KEYSTORE_PASSWORD }}"
             KEY_ALIAS="${{ secrets.KEY_ALIAS }}"
             KEY_PASS="${{ secrets.KEY_PASSWORD }}"
           else
-            keytool -genkey -v -keystore /tmp/release.keystore -alias debugkey -keyalg RSA -keysize 2048 -validity 3650 -storepass android -keypass android -dname "CN=Debug,O=Debug,C=US" -noprompt
-            KS_PASS="android"; KEY_ALIAS="debugkey"; KEY_PASS="android"
+            echo "No keystore secrets configured; using deterministic auto development signing."
+            KS_PASS="android"; KEY_ALIAS="pakr_auto"; KEY_PASS="android"
+            AUTO_SIGNING_SEED="pakr-auto-signing-v1:${GITHUB_REPOSITORY}:${{ github.event.inputs.package_name }}"
+            javac --add-exports java.base/sun.security.x509=ALL-UNNAMED Scripts/CreateDeterministicKeystore.java
+            java --add-exports java.base/sun.security.x509=ALL-UNNAMED -cp Scripts CreateDeterministicKeystore \
+              /tmp/release.keystore "$KEY_ALIAS" "$KS_PASS" "$KEY_PASS" "$AUTO_SIGNING_SEED"
           fi
           BUILD_TOOLS=$(ls $ANDROID_HOME/build-tools/ | sort -V | tail -1)
           SAFE=$(echo "${{ github.event.inputs.app_name }}" | tr ' /' '__' | LC_ALL=C tr -cd 'A-Za-z0-9_.-')
@@ -137,6 +143,7 @@ jobs:
         with:
           name: ${{ env.APK_BASE }}_arm64-v8a
           path: /tmp/signed/*arm64-v8a*.apk
+          compression-level: 0
           retention-days: 7
           if-no-files-found: warn
 
@@ -145,5 +152,6 @@ jobs:
         with:
           name: ${{ env.APK_BASE }}_armeabi-v7a
           path: /tmp/signed/*armeabi-v7a*.apk
+          compression-level: 0
           retention-days: 7
           if-no-files-found: warn
