@@ -258,6 +258,14 @@ footer span{margin:0 8px;opacity:.4}
 /* ── Icon Preview ── */
 .icon-field{display:flex;gap:10px;align-items:flex-end}
 .icon-field .field{flex:1}
+.icon-mode{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+.icon-mode label{position:relative;display:flex;align-items:center;justify-content:center;height:38px;border:1px solid #e5e5e5;border-radius:8px;background:#fafafa;color:#555;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s,border-color .15s,color .15s}
+.icon-mode input{position:absolute;opacity:0;pointer-events:none}
+.icon-mode label:has(input:checked){background:#111;border-color:#111;color:#fff}
+.icon-generated-row{display:grid;grid-template-columns:1fr 42px;gap:10px;align-items:flex-end}
+.icon-color-wrap{display:flex;gap:8px;align-items:center}
+.icon-color-wrap input[type="color"]{width:42px;height:42px;padding:0;border:1px solid #e5e5e5;border-radius:8px;background:#fff;cursor:pointer}
+.icon-color-wrap input[type="text"]{flex:1}
 .icon-preview{
   width:42px;height:42px;border-radius:10px;flex-shrink:0;margin-top:0;
   background:#f5f5f5;border:1px solid #e8e8e8;
@@ -265,6 +273,7 @@ footer span{margin:0 8px;opacity:.4}
 }
 .icon-preview img{width:100%;height:100%;object-fit:cover;display:none}
 .icon-preview-placeholder{width:20px;height:20px;opacity:.25}
+.icon-letter{display:flex;width:100%;height:100%;align-items:center;justify-content:center;color:#fff;font-size:21px;font-weight:800;font-family:Arial,Helvetica,sans-serif}
 
 
 /* ── History 浮动面板 ── */
@@ -683,10 +692,30 @@ footer{border-top-color:var(--border);color:var(--faint)}
             <label for="f_ver">版本号</label>
             <input type="text" id="f_ver" placeholder="1.0.0" value="1.0.0" required>
           </div>
-          <div class="icon-field">
+          <div class="field">
+            <label>应用图标</label>
+            <div class="icon-mode">
+              <label><input type="radio" name="icon_mode" value="generated" checked><span>文字图标</span></label>
+              <label><input type="radio" name="icon_mode" value="url"><span>图片图标</span></label>
+            </div>
+          </div>
+          <div class="icon-generated-row" id="iconGeneratedRow">
             <div class="field">
-              <label for="f_icon">图标 URL <span style="font-weight:400;color:#ef4444;font-size:11px">（必填）</span></label>
-              <input type="url" id="f_icon" placeholder="必须填写可直接访问的 PNG/JPG 图标地址">
+              <label for="f_icon_color">文字图标颜色</label>
+              <div class="icon-color-wrap">
+                <input type="text" id="f_icon_color" value="#BF3EFF" placeholder="#BF3EFF" maxlength="7">
+                <input type="color" id="f_icon_color_picker" value="#bf3eff" aria-label="选择文字图标颜色">
+              </div>
+            </div>
+            <div class="icon-preview" id="generatedIconPreview">
+              <div class="icon-letter" id="iconLetter">A</div>
+            </div>
+          </div>
+          <div class="icon-field" id="iconUrlRow">
+            <div class="field">
+              <label for="f_icon">图标 URL</label>
+              <input type="url" id="f_icon" placeholder="可直接访问的 PNG/JPG 图标地址">
+              <div class="hint">留空或无法读取时使用默认图标 logo.jpg</div>
             </div>
             <div class="icon-preview" id="iconPreview">
               <svg class="icon-preview-placeholder" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
@@ -931,7 +960,9 @@ async function handleBuildClick(){
     app_name:     document.getElementById('f_name').value.trim(),
     package_name: document.getElementById('f_pkg').value.trim(),
     version_name: document.getElementById('f_ver').value.trim(),
-    icon_url:      document.getElementById('f_icon').value.trim(),
+    icon_mode:     getIconMode(),
+    icon_url:      getIconMode() === 'url' ? getImageIconUrl() : '',
+    icon_color:    normalizeHexColor(document.getElementById('f_icon_color').value),
     no_screenshot: document.getElementById('f_no_screenshot').checked ? 'true' : 'false',
 
   };
@@ -1242,10 +1273,11 @@ function renderDownloadButtons(data, runId){
   }
 }
 
-const SAVE_KEYS = ['f_url','f_name','f_pkg','f_ver','f_icon'];
+const SAVE_KEYS = ['f_url','f_name','f_pkg','f_ver','f_icon','f_icon_color'];
 function saveForm(){
   const saved = {};
   SAVE_KEYS.forEach(id => { saved[id] = document.getElementById(id).value; });
+  saved.icon_mode = getIconMode();
   localStorage.setItem('apkbuilder_form', JSON.stringify(saved));
 }
 function loadForm(){
@@ -1254,10 +1286,20 @@ function loadForm(){
     SAVE_KEYS.forEach(id => {
       if(saved[id]) document.getElementById(id).value = saved[id];
     });
+    if(saved.icon_mode){
+      const mode = document.querySelector(`input[name="icon_mode"][value="${saved.icon_mode}"]`);
+      if(mode) mode.checked = true;
+    }
   } catch(e){}
 }
 SAVE_KEYS.forEach(id => {
   document.getElementById(id).addEventListener('input', saveForm);
+});
+document.querySelectorAll('input[name="icon_mode"]').forEach(el => {
+  el.addEventListener('change', () => {
+    syncIconModeUI();
+    saveForm();
+  });
 });
 loadForm();
 setupAutoPackageName();
@@ -1270,14 +1312,63 @@ setupAutoPackageName();
 const iconInput   = document.getElementById('f_icon');
 const iconImg     = document.getElementById('iconImg');
 const iconPreview = document.getElementById('iconPreview');
+const iconUrlRow = document.getElementById('iconUrlRow');
+const iconGeneratedRow = document.getElementById('iconGeneratedRow');
+const iconColorInput = document.getElementById('f_icon_color');
+const iconColorPicker = document.getElementById('f_icon_color_picker');
+const generatedIconPreview = document.getElementById('generatedIconPreview');
+const iconLetterEl = document.getElementById('iconLetter');
+const DEFAULT_IMAGE_ICON = 'logo.jpg';
+
+function getIconMode(){
+  const checked = document.querySelector('input[name="icon_mode"]:checked');
+  return checked ? checked.value : 'generated';
+}
+
+function normalizeHexColor(value){
+  const raw = String(value || '').trim();
+  const hex = raw.startsWith('#') ? raw : '#' + raw;
+  return /^#[0-9a-f]{6}$/i.test(hex) ? hex : '#BF3EFF';
+}
+
+function isValidIconUrl(url){
+  return /^https?:\/\//i.test(String(url || '').trim());
+}
+
+function getImageIconUrl(){
+  const url = iconInput.value.trim();
+  return isValidIconUrl(url) ? url : '';
+}
+
+function generatedIconLetter(){
+  const text = document.getElementById('f_name').value.trim()
+    || document.getElementById('f_pkg').value.trim()
+    || 'A';
+  const match = text.match(/[A-Za-z0-9\u4e00-\u9fa5]/);
+  return (match ? match[0] : 'A').toUpperCase();
+}
+
+function syncGeneratedIconPreview(){
+  const color = normalizeHexColor(iconColorInput.value);
+  iconColorInput.value = color;
+  iconColorPicker.value = color;
+  generatedIconPreview.style.background = color;
+  iconLetterEl.textContent = generatedIconLetter();
+}
+
+function syncIconModeUI(){
+  const generated = getIconMode() === 'generated';
+  iconGeneratedRow.style.display = generated ? 'grid' : 'none';
+  iconUrlRow.style.display = generated ? 'none' : 'flex';
+  syncGeneratedIconPreview();
+  triggerIconPreview(getImageIconUrl());
+}
 
 function triggerIconPreview(url){
   iconPreview.className = 'icon-preview';
   iconImg.style.display = 'none';
-  if(!url || (!url.startsWith('http://') && !url.startsWith('https://'))){
-    // 空或非 URL，回到默认占位
-    return;
-  }
+  const src = isValidIconUrl(url) ? url.trim() : DEFAULT_IMAGE_ICON;
+  // Empty or invalid URLs fall back to the bundled logo.
   iconPreview.classList.add('loading');
   const tmp = new Image();
   tmp.onload  = () => {
@@ -1286,22 +1377,34 @@ function triggerIconPreview(url){
     iconPreview.className = 'icon-preview ok';
   };
   tmp.onerror = () => {
-    iconImg.style.display = 'none';
-    iconPreview.className = 'icon-preview err';
+    if(src !== DEFAULT_IMAGE_ICON){
+      triggerIconPreview(DEFAULT_IMAGE_ICON);
+      return;
+    }
+    iconPreview.className = 'icon-preview';
   };
-  tmp.src = url;
+  tmp.src = src;
 }
 
 iconInput.addEventListener('input', () => {
-  triggerIconPreview(iconInput.value.trim());
+  triggerIconPreview(getImageIconUrl());
 });
 iconInput.addEventListener('change', () => {
-  triggerIconPreview(iconInput.value.trim());
+  triggerIconPreview(getImageIconUrl());
+});
+iconColorInput.addEventListener('input', syncGeneratedIconPreview);
+iconColorPicker.addEventListener('input', () => {
+  iconColorInput.value = iconColorPicker.value;
+  syncGeneratedIconPreview();
+  saveForm();
+});
+['f_name','f_pkg'].forEach(id => {
+  document.getElementById(id).addEventListener('input', syncGeneratedIconPreview);
 });
 window.addEventListener('pageshow', () => {
-  triggerIconPreview(iconInput.value.trim());
+  syncIconModeUI();
 });
-triggerIconPreview(iconInput.value.trim());
+syncIconModeUI();
 
 /* ── 打包历史 ── */
 const HISTORY_KEY = 'apkbuilder_history';
@@ -1329,7 +1432,7 @@ function renderHistory(){
   historyList.innerHTML = h.map((item,i) => `
     <div class="history-item" data-idx="${i}">
       <div class="history-icon">
-        ${item.icon_url ? '<img src="' + item.icon_url + '" onerror="this.style.display=\'none\'">' : ''}
+        ${historyIconHtml(item)}
       </div>
       <div class="history-info">
         <div class="history-name">${item.app_name}</div>
@@ -1349,9 +1452,13 @@ function renderHistory(){
       const _vp = (item.version_name||'1.0.0').split('.');
       _vp[_vp.length-1] = String((parseInt(_vp[_vp.length-1])||0)+1);
       document.getElementById('f_ver').value = _vp.join('.');
-      document.getElementById('f_icon').value = item.icon_url;
+      document.getElementById('f_icon').value = item.icon_url || '';
+      document.getElementById('f_icon_color').value = normalizeHexColor(item.icon_color || '#BF3EFF');
+      const iconMode = item.icon_mode || (isValidIconUrl(item.icon_url) ? 'url' : 'generated');
+      const modeInput = document.querySelector('input[name="icon_mode"][value="' + iconMode + '"]');
+      if(modeInput) modeInput.checked = true;
       saveForm();
-      triggerIconPreview(item.icon_url);
+      syncIconModeUI();
       toggleHistoryPanel();
       window.scrollTo({top:0, behavior:'smooth'});
     });
@@ -1372,13 +1479,24 @@ function histCopy(btn, url){
   else{ const t=document.createElement('textarea');t.value=url;document.body.appendChild(t);t.select();document.execCommand('copy');document.body.removeChild(t);ok(); }
 }
 
+function historyIconHtml(item){
+  if(item.icon_mode === 'generated' || !isValidIconUrl(item.icon_url)){
+    const color = normalizeHexColor(item.icon_color || '#BF3EFF');
+    const letter = String(item.app_name || item.package_name || 'A').match(/[A-Za-z0-9\u4e00-\u9fa5]/)?.[0] || 'A';
+    return '<div class="icon-letter" style="background:' + color + '">' + letter.toUpperCase() + '</div>';
+  }
+  return "<img src=\"" + item.icon_url + "\" onerror=\"this.style.display='none'\">";
+}
+
 function addHistory(data){
   const item = {
     run_id:       data.run_id || currentRunId,
     app_name:     document.getElementById('f_name').value.trim(),
     package_name: document.getElementById('f_pkg').value.trim(),
     version_name: document.getElementById('f_ver').value.trim(),
-    icon_url:     document.getElementById('f_icon').value.trim(),
+    icon_mode:    getIconMode(),
+    icon_url:     getIconMode() === 'url' ? getImageIconUrl() : '',
+    icon_color:   normalizeHexColor(document.getElementById('f_icon_color').value),
     app_url:      document.getElementById('f_url').value.trim(),
     artifacts:    data.artifacts || (data.artifact_id ? [{id:data.artifact_id,name:data.artifact_name||'APK'}] : []),
     ts: Date.now(),

@@ -20,9 +20,17 @@ on:
         required: true
         default: 1.0.0
       icon_url:
-        description: Icon Image URL
+        description: Image icon URL, optional when using generated mode
         required: false
         default: ""
+      icon_mode:
+        description: Icon mode (generated/url)
+        required: false
+        default: "generated"
+      icon_color:
+        description: Generated icon color
+        required: false
+        default: "#BF3EFF"
       no_screenshot:
         description: Disable screenshot (true/false)
         required: false
@@ -91,6 +99,10 @@ jobs:
       - name: Process icon
         env:
           ICON_URL: ${{ github.event.inputs.icon_url }}
+          ICON_MODE: ${{ github.event.inputs.icon_mode }}
+          ICON_COLOR: ${{ github.event.inputs.icon_color }}
+          APP_NAME: ${{ github.event.inputs.app_name }}
+          PACKAGE_NAME: ${{ github.event.inputs.package_name }}
         run: |
           pip install Pillow -q
           python3 Scripts/process_icon.py

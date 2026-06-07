@@ -19,7 +19,7 @@ export default {
 };
 
 async function handleBuild(request, env) {
-  const { app_url, app_name, package_name, version_name, icon_url, no_screenshot } = await request.json();
+  const { app_url, app_name, package_name, version_name, icon_url, icon_mode, icon_color, no_screenshot } = await request.json();
   const buildId = Date.now().toString(36) + Math.random().toString(36).slice(2,6);
   if (!app_url || !app_name || !package_name || !version_name)
     return json({ error: 'Missing required fields' }, 400);
@@ -35,11 +35,24 @@ async function handleBuild(request, env) {
   if (!version_name || version_name.length > 32)
     return json({ error: 'version_name must be 1-32 characters' }, 400);
 
+  const resolvedIconMode = icon_mode === 'url' ? 'url' : 'generated';
+  const resolvedIconColor = /^#?[0-9a-f]{6}$/i.test(icon_color || '') ? icon_color : '#BF3EFF';
+
   const r = await gh(env,
     `/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/build.yml/dispatches`,
     { method: 'POST', body: JSON.stringify({
         ref: 'main',
-        inputs: { app_url, app_name, package_name, version_name, icon_url: icon_url || 'https://apk.091224.xyz/logo.jpg', no_screenshot: no_screenshot||'false', build_id: buildId }
+        inputs: {
+          app_url,
+          app_name,
+          package_name,
+          version_name,
+          icon_url: resolvedIconMode === 'url' && /^https?:\/\//i.test(icon_url || '') ? icon_url : '',
+          icon_mode: resolvedIconMode,
+          icon_color: resolvedIconColor,
+          no_screenshot: no_screenshot||'false',
+          build_id: buildId
+        }
     })}
   );
   if (r.status !== 204) return json({ error: 'Trigger failed', detail: await r.text() }, 500);
