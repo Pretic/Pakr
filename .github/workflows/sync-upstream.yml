@@ -1,0 +1,178 @@
+name: Sync Upstream
+run-name: Upstream sync ${{ inputs.mode }} / ${{ inputs.sync_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      sync_id:
+        description: Unique sync request ID
+        required: true
+      mode:
+        description: check or pr
+        required: true
+        default: check
+      upstream_repo:
+        description: Allowed upstream repository
+        required: false
+        default: Pretic/PakrPre
+      upstream_branch:
+        description: Upstream branch
+        required: false
+        default: main
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Inspect upstream
+        id: inspect
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          SYNC_ID: ${{ github.event.inputs.sync_id }}
+          UPSTREAM_REPO: ${{ github.event.inputs.upstream_repo }}
+          UPSTREAM_BRANCH: ${{ github.event.inputs.upstream_branch }}
+        run: |
+          set -euo pipefail
+
+          if [ "$MODE" != "check" ] && [ "$MODE" != "pr" ]; then
+            echo "Unsupported mode: $MODE" >&2
+            exit 1
+          fi
+
+          case "$UPSTREAM_REPO" in
+            Pretic/PakrPre) ;;
+            *)
+              echo "Upstream repository is not allowed: $UPSTREAM_REPO" >&2
+              exit 1
+              ;;
+          esac
+
+          case "$UPSTREAM_BRANCH" in
+            main) ;;
+            *)
+              echo "Upstream branch is not allowed: $UPSTREAM_BRANCH" >&2
+              exit 1
+              ;;
+          esac
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "$UPSTREAM_BRANCH" --tags
+
+          LOCAL_SHA="$(git rev-parse HEAD)"
+          UPSTREAM_SHA="$(git rev-parse "upstream/${UPSTREAM_BRANCH}")"
+          BASE_SHA="$(git merge-base HEAD "upstream/${UPSTREAM_BRANCH}")"
+          AHEAD="$(git rev-list --count "upstream/${UPSTREAM_BRANCH}..HEAD")"
+          BEHIND="$(git rev-list --count "HEAD..upstream/${UPSTREAM_BRANCH}")"
+
+          {
+            echo "## Upstream sync report"
+            echo ""
+            echo "- Sync ID: \`$SYNC_ID\`"
+            echo "- Mode: \`$MODE\`"
+            echo "- Current repository: \`${GITHUB_REPOSITORY}\`"
+            echo "- Upstream: \`${UPSTREAM_REPO}/${UPSTREAM_BRANCH}\`"
+            echo "- Local SHA: \`$LOCAL_SHA\`"
+            echo "- Upstream SHA: \`$UPSTREAM_SHA\`"
+            echo "- Merge base: \`$BASE_SHA\`"
+            echo "- Local commits ahead of upstream: \`$AHEAD\`"
+            echo "- Upstream commits ahead of local: \`$BEHIND\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "local_sha=$LOCAL_SHA" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+          echo "ahead=$AHEAD" >> "$GITHUB_OUTPUT"
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+
+          if [ "$BEHIND" = "0" ]; then
+            echo "SYNC_STATUS=up_to_date"
+            echo "The repository is already up to date with upstream." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git checkout -B "sync-check-${SYNC_ID}" HEAD
+          set +e
+          git merge --no-commit --no-ff "upstream/${UPSTREAM_BRANCH}" >/tmp/upstream-merge-check.log 2>&1
+          MERGE_CODE=$?
+          set -e
+
+          if [ "$MERGE_CODE" -ne 0 ]; then
+            echo "SYNC_STATUS=conflict"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### Merge conflict" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Conflicting files:" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            git diff --name-only --diff-filter=U | tee /tmp/upstream-conflicts.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Merge output:" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat /tmp/upstream-merge-check.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            git merge --abort || true
+            if [ "$MODE" = "check" ]; then
+              exit 0
+            fi
+            exit 1
+          fi
+
+          echo "SYNC_STATUS=mergeable"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Merge check" >> "$GITHUB_STEP_SUMMARY"
+          echo "Upstream changes are mergeable." >> "$GITHUB_STEP_SUMMARY"
+          git merge --abort || true
+
+      - name: Create upstream sync pull request
+        if: ${{ github.event.inputs.mode == 'pr' && steps.inspect.outputs.behind != '0' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYNC_ID: ${{ github.event.inputs.sync_id }}
+          UPSTREAM_REPO: ${{ github.event.inputs.upstream_repo }}
+          UPSTREAM_BRANCH: ${{ github.event.inputs.upstream_branch }}
+          UPSTREAM_SHA: ${{ steps.inspect.outputs.upstream_sha }}
+          AHEAD: ${{ steps.inspect.outputs.ahead }}
+          BEHIND: ${{ steps.inspect.outputs.behind }}
+        run: |
+          set -euo pipefail
+
+          BRANCH="sync/upstream-${UPSTREAM_BRANCH}-${SYNC_ID}"
+          git checkout -B "$BRANCH" HEAD
+          git merge --no-ff --no-edit "upstream/${UPSTREAM_BRANCH}"
+
+          git push origin "$BRANCH"
+
+          cat > /tmp/upstream-sync-pr-body.md <<EOF
+          ## Upstream sync
+
+          This PR syncs this repository with \`${UPSTREAM_REPO}/${UPSTREAM_BRANCH}\`.
+
+          - Sync ID: \`${SYNC_ID}\`
+          - Upstream SHA: \`${UPSTREAM_SHA}\`
+          - Local commits ahead before sync: \`${AHEAD}\`
+          - Upstream commits ahead before sync: \`${BEHIND}\`
+
+          Cloudflare Pages should deploy only after this PR is merged into \`main\`.
+          EOF
+
+          PR_URL="$(gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "Sync upstream ${UPSTREAM_REPO}@${UPSTREAM_SHA}" \
+            --body-file /tmp/upstream-sync-pr-body.md)"
+
+          echo "SYNC_PR_URL=$PR_URL"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Pull request" >> "$GITHUB_STEP_SUMMARY"
+          echo "$PR_URL" >> "$GITHUB_STEP_SUMMARY"

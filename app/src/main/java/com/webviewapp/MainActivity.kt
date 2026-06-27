@@ -2,15 +2,20 @@ package com.webviewapp
 
 import android.annotation.SuppressLint
 import android.app.DownloadManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.os.Environment
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.MotionEvent
 import android.view.View
+import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
@@ -39,6 +44,20 @@ class MainActivity : AppCompatActivity() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var overlayVisible = false
+    private var elementBlockerScript: String? = null
+    private var nativeToolGestureActive = false
+    private var nativeToolTriggered = false
+    private var nativeToolStartCenterX = 0f
+    private var nativeToolStartCenterY = 0f
+    private val nativeToolLongPressDelayMs = 700L
+    private val nativeToolMoveTolerancePx: Float by lazy { 14f * resources.displayMetrics.density }
+    private val nativeToolLongPressRunnable = Runnable {
+        if (!nativeToolGestureActive || nativeToolTriggered) return@Runnable
+        nativeToolGestureActive = false
+        nativeToolTriggered = true
+        restoreSwipeRefreshState()
+        openPakrToolMenuFromNative(nativeToolStartCenterX, nativeToolStartCenterY)
+    }
 
     private val dotsFrames = arrayOf("", ".", "..", "...")
     private var dotsIndex = 0
@@ -51,22 +70,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val timeoutRunnable = Runnable { hideOverlay() }
+    private val delayHideRunnable = Runnable { hideOverlay() }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        @Suppress("DEPRECATION")
-        window.setFlags(
-            android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN or
-            android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN or
-            android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(
+            androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_NO
         )
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        val controller = WindowInsetsControllerCompat(window, window.decorView)
-        controller.hide(WindowInsetsCompat.Type.systemBars())
-        controller.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        super.onCreate(savedInstanceState)
+        if (NO_SCREENSHOT.equals("true", ignoreCase = true)) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        applyDisplayMode()
         setContentView(R.layout.activity_main)
         webView     = findViewById(R.id.webView)
         progressBar = findViewById(R.id.progressBar)
@@ -77,16 +92,58 @@ class MainActivity : AppCompatActivity() {
         swipeRefresh.setColorSchemeColors(
             android.graphics.Color.parseColor("#6366F1")
         )
+        swipeRefresh.setProgressViewOffset(false, 0, 160)
         swipeRefresh.setOnRefreshListener {
+            forceShowOverlay()
             webView.reload()
         }
-        showDisclaimerIfNeeded()
         showOverlay()
         setupWebView()
     }
 
+    private fun applyDisplayMode() {
+        if (WINDOW_MODE.equals("true", ignoreCase = true)) {
+            configureWindowMode()
+        } else {
+            configureFullscreenMode()
+        }
+    }
+
+    private fun configureFullscreenMode() {
+        @Suppress("DEPRECATION")
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_FULLSCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            WindowManager.LayoutParams.FLAG_FULLSCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        )
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
+    private fun configureWindowMode() {
+        @Suppress("DEPRECATION")
+        window.clearFlags(
+            WindowManager.LayoutParams.FLAG_FULLSCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        )
+        WindowCompat.setDecorFitsSystemWindows(window, true)
+        window.statusBarColor = Color.WHITE
+        window.navigationBarColor = Color.WHITE
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            show(WindowInsetsCompat.Type.systemBars())
+            isAppearanceLightStatusBars = true
+            isAppearanceLightNavigationBars = true
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
+        webView.setBackgroundColor(android.graphics.Color.WHITE)
         webView.settings.apply {
             javaScriptEnabled                = true
             domStorageEnabled                = true
@@ -105,12 +162,21 @@ class MainActivity : AppCompatActivity() {
         }
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
-                showOverlay()
+                handler.removeCallbacks(delayHideRunnable)
+                applySavedFontScaleForUrl(url)
+                forceShowOverlay()
+            }
+
+            override fun onPageCommitVisible(view: WebView, url: String) {
+                injectWebViewEnhancements(view)
             }
 
             override fun onPageFinished(view: WebView, url: String) {
                 swipeRefresh.isRefreshing = false
                 fetchThemeColor(view)
+                injectWebViewEnhancements(view)
+                handler.removeCallbacks(delayHideRunnable)
+                handler.postDelayed(delayHideRunnable, 300)
             }
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -123,6 +189,17 @@ class MainActivity : AppCompatActivity() {
             }
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (request.isForMainFrame) {
+                    swipeRefresh.isRefreshing = false
+                    handler.removeCallbacks(delayHideRunnable)
+                    hideOverlay()
+                    view.loadData(errorHtml(), "text/html", "UTF-8")
+                }
+            }
+
+            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: android.webkit.WebResourceResponse) {
+                if (request.isForMainFrame && errorResponse.statusCode >= 400) {
+                    swipeRefresh.isRefreshing = false
+                    handler.removeCallbacks(delayHideRunnable)
                     hideOverlay()
                     view.loadData(errorHtml(), "text/html", "UTF-8")
                 }
@@ -131,7 +208,11 @@ class MainActivity : AppCompatActivity() {
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView, newProgress: Int) {
                 progressBar.setProgress(newProgress)
-                if (newProgress >= 75) hideOverlay()
+                if (newProgress <= 5) showOverlay()
+                if (newProgress >= 95) {
+                    handler.removeCallbacks(delayHideRunnable)
+                    handler.postDelayed(delayHideRunnable, 400)
+                }
             }
             override fun onPermissionRequest(request: PermissionRequest) {
                 request.grant(request.resources)
@@ -141,11 +222,30 @@ class MainActivity : AppCompatActivity() {
                 filePathCallback: ValueCallback<Array<Uri>>,
                 fileChooserParams: WebChromeClient.FileChooserParams
             ): Boolean {
+                fileChooserCallbackRef?.onReceiveValue(null)
+                fileChooserCallbackRef = filePathCallback
                 try {
-                    startActivityForResult(fileChooserParams.createIntent(), FILE_CHOOSER_REQUEST)
-                    fileChooserCallbackRef = filePathCallback
+                    val photoFile = java.io.File(
+                        cacheDir,
+                        "webview_uploads/camera_${System.currentTimeMillis()}.jpg"
+                    ).also { it.parentFile?.mkdirs() }
+                    cameraImageUri = androidx.core.content.FileProvider.getUriForFile(
+                        this@MainActivity,
+                        "${packageName}.fileprovider",
+                        photoFile
+                    )
+                    val cameraIntent = android.content.Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                        putExtra(android.provider.MediaStore.EXTRA_OUTPUT, cameraImageUri)
+                        addFlags(android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                    }
+                    val fileIntent = fileChooserParams.createIntent()
+                    val chooser = android.content.Intent.createChooser(fileIntent, "选择图片").apply {
+                        putExtra(android.content.Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
+                    }
+                    startActivityForResult(chooser, FILE_CHOOSER_REQUEST)
                 } catch (e: Exception) {
                     filePathCallback.onReceiveValue(null)
+                    fileChooserCallbackRef = null
                 }
                 return true
             }
@@ -171,11 +271,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
         // 键盘弹出适配：FLAG_FULLSCREEN 下 adjustResize 失效，手动监听 Insets
-        val rootView = window.decorView.rootView
-        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(rootView) { _, insets ->
-            val imeHeight = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime()).bottom
-            val navHeight = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars()).bottom
-            webView.setPadding(0, 0, 0, if (imeHeight > 0) imeHeight - navHeight else 0)
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(swipeRefresh) { view, insets ->
+            val imeInsets = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime())
+            val lp = view.layoutParams as android.widget.FrameLayout.LayoutParams
+            lp.bottomMargin = imeInsets.bottom
+            view.layoutParams = lp
+            webView.setPadding(0, 0, 0, 0)
             insets
         }
 
@@ -188,10 +289,302 @@ class MainActivity : AppCompatActivity() {
                 } catch (e: Exception) {}
             }
         }, "ThemeBridge")
-        // 在 UserAgent 中加入 App 标识，网页端据此跳过免责声明弹窗
-        val defaultUA = webView.settings.userAgentString
-        webView.settings.userAgentString = "$defaultUA PakrApp/1.0"
+        webView.addJavascriptInterface(object {
+            @JavascriptInterface
+            fun getRules(host: String): String {
+                return getSharedPreferences("element_blocker", Context.MODE_PRIVATE)
+                    .getString(normalizeRuleHost(host), "[]") ?: "[]"
+            }
+
+            @JavascriptInterface
+            fun saveRules(host: String, rulesJson: String) {
+                getSharedPreferences("element_blocker", Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(normalizeRuleHost(host), rulesJson.take(50_000))
+                    .apply()
+            }
+
+            @JavascriptInterface
+            fun getFontScale(host: String): String {
+                return getSharedPreferences("reader_settings", Context.MODE_PRIVATE)
+                    .getString("${normalizeRuleHost(host)}:font_scale", "normal") ?: "normal"
+            }
+
+            @JavascriptInterface
+            fun saveFontScale(host: String, scale: String) {
+                val safeScale = normalizeFontScaleValue(scale)
+                getSharedPreferences("reader_settings", Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("${normalizeRuleHost(host)}:font_scale", safeScale)
+                    .apply()
+                runOnUiThread { setWebViewFontScale(safeScale) }
+            }
+
+            @JavascriptInterface
+            fun applyFontScale(_host: String, scale: String) {
+                runOnUiThread { setWebViewFontScale(normalizeFontScaleValue(scale)) }
+            }
+
+            @JavascriptInterface
+            fun previewImage(url: String) {
+                runOnUiThread { showImagePreview(url) }
+            }
+
+            @JavascriptInterface
+            fun toast(message: String) {
+                runOnUiThread {
+                    android.widget.Toast.makeText(
+                        this@MainActivity,
+                        message.take(80),
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }, "PakrElementBlocker")
+        webView.addJavascriptInterface(object {
+            @JavascriptInterface
+            fun writeText(text: String?) {
+                handler.post {
+                    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("text", text.orEmpty()))
+                }
+            }
+        }, "PakrClipboard")
+        webView.settings.userAgentString = configuredUserAgent()
+        installNativeToolEntry()
+        webView.setOnScrollChangeListener { _, _, scrollY, _, _ ->
+            swipeRefresh.isEnabled = scrollY == 0
+        }
         webView.loadUrl(APP_URL)
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun installNativeToolEntry() {
+        webView.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (event.pointerCount == 2) {
+                        startNativeToolGesture(event)
+                    } else if (nativeToolGestureActive) {
+                        cancelNativeToolGesture()
+                    }
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (nativeToolGestureActive &&
+                        (event.pointerCount < 2 || nativeToolMovedBeyondTolerance(event))
+                    ) {
+                        cancelNativeToolGesture()
+                    }
+                }
+                MotionEvent.ACTION_POINTER_UP,
+                MotionEvent.ACTION_UP,
+                MotionEvent.ACTION_CANCEL -> cancelNativeToolGesture()
+            }
+            false
+        }
+    }
+
+    private fun startNativeToolGesture(event: MotionEvent) {
+        val center = nativeToolCenter(event) ?: return
+        nativeToolGestureActive = true
+        nativeToolTriggered = false
+        nativeToolStartCenterX = center.first
+        nativeToolStartCenterY = center.second
+        swipeRefresh.isEnabled = false
+        handler.removeCallbacks(nativeToolLongPressRunnable)
+        handler.postDelayed(nativeToolLongPressRunnable, nativeToolLongPressDelayMs)
+    }
+
+    private fun nativeToolMovedBeyondTolerance(event: MotionEvent): Boolean {
+        val center = nativeToolCenter(event) ?: return true
+        val dx = center.first - nativeToolStartCenterX
+        val dy = center.second - nativeToolStartCenterY
+        return dx * dx + dy * dy > nativeToolMoveTolerancePx * nativeToolMoveTolerancePx
+    }
+
+    private fun nativeToolCenter(event: MotionEvent): Pair<Float, Float>? {
+        if (event.pointerCount < 2) return null
+        return Pair(
+            (event.getX(0) + event.getX(1)) / 2f,
+            (event.getY(0) + event.getY(1)) / 2f
+        )
+    }
+
+    private fun cancelNativeToolGesture() {
+        handler.removeCallbacks(nativeToolLongPressRunnable)
+        nativeToolGestureActive = false
+        nativeToolTriggered = false
+        restoreSwipeRefreshState()
+    }
+
+    private fun restoreSwipeRefreshState() {
+        if (::swipeRefresh.isInitialized && ::webView.isInitialized) {
+            swipeRefresh.isEnabled = webView.scrollY == 0
+        }
+    }
+
+    private fun openPakrToolMenuFromNative(x: Float, y: Float) {
+        val maxX = webView.width.toFloat().coerceAtLeast(1f)
+        val maxY = webView.height.toFloat().coerceAtLeast(1f)
+        val safeX = x.coerceIn(0f, maxX).toInt()
+        val safeY = y.coerceIn(0f, maxY).toInt()
+        val script = """
+            (function() {
+                if (window.PakrElementBlockerUI && window.PakrElementBlockerUI.openMenuAt) {
+                    return window.PakrElementBlockerUI.openMenuAt($safeX, $safeY);
+                }
+                return false;
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(script) { result ->
+            if (result != "true") {
+                injectWebViewEnhancements(webView)
+                handler.postDelayed({ webView.evaluateJavascript(script, null) }, 80)
+            }
+        }
+    }
+
+    private fun configuredUserAgent(): String {
+        return when (UA_MODE.lowercase()) {
+            "android", "auto" -> ANDROID_MOBILE_UA
+            "iphone" -> "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+            "harmonyos" -> "Mozilla/5.0 (Linux; Android 12; HarmonyOS; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+            "android_pad" -> "Mozilla/5.0 (Linux; Android 14; Pixel Tablet) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "ipad" -> "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+            else -> ANDROID_MOBILE_UA
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun showImagePreview(rawUrl: String) {
+        val imageUrl = rawUrl.trim().take(8_000)
+        if (!isPreviewableImageUrl(imageUrl)) {
+            android.widget.Toast.makeText(this, "暂不支持预览此图片", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        imagePreviewDialog?.dismiss()
+
+        val dialog = android.app.Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+        val previewWebView = WebView(this).apply {
+            setBackgroundColor(android.graphics.Color.BLACK)
+            settings.apply {
+                javaScriptEnabled = false
+                domStorageEnabled = false
+                databaseEnabled = false
+                useWideViewPort = true
+                loadWithOverviewMode = true
+                setSupportZoom(true)
+                builtInZoomControls = true
+                displayZoomControls = false
+                mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            }
+        }
+        val root = android.widget.FrameLayout(this).apply {
+            setBackgroundColor(android.graphics.Color.BLACK)
+            addView(
+                previewWebView,
+                android.widget.FrameLayout.LayoutParams(
+                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            )
+        }
+        val closeButton = TextView(this).apply {
+            text = "×"
+            textSize = 30f
+            gravity = android.view.Gravity.CENTER
+            setTextColor(android.graphics.Color.WHITE)
+            setBackgroundColor(0x66000000)
+            setOnClickListener { dialog.dismiss() }
+        }
+        val closeSize = (48 * resources.displayMetrics.density).toInt()
+        val closeMargin = (16 * resources.displayMetrics.density).toInt()
+        root.addView(
+            closeButton,
+            android.widget.FrameLayout.LayoutParams(closeSize, closeSize).apply {
+                gravity = android.view.Gravity.TOP or android.view.Gravity.END
+                topMargin = closeMargin
+                marginEnd = closeMargin
+            }
+        )
+
+        dialog.setContentView(root)
+        dialog.setOnDismissListener {
+            (previewWebView.parent as? android.view.ViewGroup)?.removeView(previewWebView)
+            previewWebView.stopLoading()
+            previewWebView.loadUrl("about:blank")
+            previewWebView.destroy()
+            if (imagePreviewDialog === dialog) imagePreviewDialog = null
+        }
+        imagePreviewDialog = dialog
+        dialog.show()
+        previewWebView.loadDataWithBaseURL(
+            webView.url ?: imageUrl,
+            imagePreviewHtml(imageUrl),
+            "text/html",
+            "UTF-8",
+            null
+        )
+    }
+
+    private fun isPreviewableImageUrl(url: String): Boolean {
+        if (url.isBlank()) return false
+        val scheme = try { Uri.parse(url).scheme?.lowercase() } catch (_: Exception) { null }
+        return scheme == "http" || scheme == "https" || scheme == "data"
+    }
+
+    private fun normalizeFontScaleValue(scale: String): String {
+        return when (scale) {
+            "small", "normal", "large" -> scale
+            else -> "normal"
+        }
+    }
+
+    private fun setWebViewFontScale(scale: String) {
+        webView.settings.textZoom = when (normalizeFontScaleValue(scale)) {
+            "small" -> 90
+            "large" -> 115
+            else -> 100
+        }
+    }
+
+    private fun applySavedFontScaleForUrl(url: String) {
+        val host = try { Uri.parse(url).host ?: "local" } catch (_: Exception) { "local" }
+        val scale = getSharedPreferences("reader_settings", Context.MODE_PRIVATE)
+            .getString("${normalizeRuleHost(host)}:font_scale", "normal") ?: "normal"
+        setWebViewFontScale(scale)
+    }
+
+    private fun imagePreviewHtml(imageUrl: String): String {
+        val safeUrl = htmlEscape(imageUrl)
+        return """
+            <!doctype html>
+            <html>
+            <head>
+              <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=8,user-scalable=yes">
+              <style>
+                html,body{margin:0;width:100%;height:100%;min-height:100%;background:#000;}
+                body{display:grid;place-items:center;overflow:auto;box-sizing:border-box;}
+                img{display:block;max-width:100vw;max-height:100vh;width:auto;height:auto;object-fit:contain;margin:auto;}
+              </style>
+            </head>
+            <body><img src="$safeUrl" alt=""></body>
+            </html>
+        """.trimIndent()
+    }
+
+    private fun htmlEscape(value: String): String {
+        return value
+            .replace("&", "&amp;")
+            .replace("\"", "&quot;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+    }
+
+    private fun normalizeRuleHost(host: String): String {
+        val cleaned = host.lowercase().replace(Regex("[^a-z0-9._-]"), "_").take(255)
+        return cleaned.ifBlank { "local" }
     }
 
     private fun fetchThemeColor(view: WebView) {
@@ -214,18 +607,103 @@ class MainActivity : AppCompatActivity() {
         view.evaluateJavascript(js, null)
     }
 
+    private fun injectElementBlocker(view: WebView) {
+        val script = try {
+            elementBlockerScript ?: assets.open("pakr_element_blocker.js")
+                .bufferedReader()
+                .use { it.readText() }
+                .also { elementBlockerScript = it }
+        } catch (_: Exception) {
+            return
+        }
+        view.evaluateJavascript(script, null)
+    }
+
+    private fun injectClipboardBridge(view: WebView) {
+        val script = """
+            (function() {
+                if (window.__pakrClipboardBridgeReady) return;
+                window.__pakrClipboardBridgeReady = true;
+
+                function nativeWriteText(value) {
+                    try {
+                        if (window.PakrClipboard && window.PakrClipboard.writeText) {
+                            window.PakrClipboard.writeText(String(value == null ? "" : value));
+                            return Promise.resolve();
+                        }
+                    } catch (error) {
+                        return Promise.reject(error);
+                    }
+                    return Promise.reject(new Error("Native clipboard bridge unavailable"));
+                }
+
+                var clipboard = {};
+                try {
+                    var current = navigator.clipboard || {};
+                    Object.getOwnPropertyNames(current).forEach(function (key) {
+                        try {
+                            var value = current[key];
+                            clipboard[key] = typeof value === "function" ? value.bind(current) : value;
+                        } catch (_) {}
+                    });
+                } catch (_) {}
+                clipboard.writeText = nativeWriteText;
+
+                try {
+                    Object.defineProperty(navigator, "clipboard", {
+                        configurable: true,
+                        get: function () { return clipboard; }
+                    });
+                } catch (_) {
+                    try { navigator.clipboard = clipboard; } catch (ignored) {}
+                }
+
+                if (navigator.permissions && navigator.permissions.query) {
+                    var originalQuery = navigator.permissions.query.bind(navigator.permissions);
+                    navigator.permissions.query = function (descriptor) {
+                        var name = descriptor && descriptor.name;
+                        if (name === "clipboard-write" || name === "clipboard-read") {
+                            return Promise.resolve({ state: "granted", onchange: null });
+                        }
+                        return originalQuery(descriptor);
+                    };
+                }
+
+                document.addEventListener("copy", function () {
+                    try {
+                        var selected = window.getSelection && String(window.getSelection());
+                        if (selected) nativeWriteText(selected);
+                    } catch (_) {}
+                }, true);
+            })();
+        """.trimIndent()
+        view.evaluateJavascript(script, null)
+    }
+
+    private fun injectWebViewEnhancements(view: WebView) {
+        injectClipboardBridge(view)
+        injectElementBlocker(view)
+    }
+
     private fun showOverlay() {
         if (overlayVisible) return
         overlayVisible = true
+        overlay.animate().cancel()
         overlay.alpha = 1f
         overlay.visibility = View.VISIBLE
         progressBar.visibility = View.VISIBLE
         progressBar.setProgress(0)
         spinner.start()
         dotsIndex = 0
+        handler.removeCallbacks(dotsRunnable)
         handler.post(dotsRunnable)
         handler.removeCallbacks(timeoutRunnable)
-        handler.postDelayed(timeoutRunnable, 10_000L)
+        handler.postDelayed(timeoutRunnable, 30_000L)
+    }
+
+    private fun forceShowOverlay() {
+        overlayVisible = false
+        showOverlay()
     }
 
     private fun hideOverlay() {
@@ -233,10 +711,13 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacks(timeoutRunnable)
         handler.removeCallbacks(dotsRunnable)
         overlayVisible = false
+        overlay.animate().cancel()
         overlay.animate().alpha(0f).setDuration(300).withEndAction {
-            overlay.visibility = View.GONE
-            spinner.stop()
-            progressBar.visibility = View.GONE
+            if (!overlayVisible) {
+                overlay.visibility = View.GONE
+                spinner.stop()
+                progressBar.visibility = View.GONE
+            }
         }.start()
     }
 
@@ -272,53 +753,87 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onPause() { super.onPause(); CookieManager.getInstance().flush() }
-    override fun onDestroy() { handler.removeCallbacksAndMessages(null); webView.destroy(); super.onDestroy() }
+    override fun onResume() {
+        super.onResume()
+        webView.onResume()
+        webView.resumeTimers()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        webView.onPause()
+        webView.pauseTimers()
+        CookieManager.getInstance().flush()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        CookieManager.getInstance().flush()
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        fileChooserCallbackRef?.onReceiveValue(null)
+        fileChooserCallbackRef = null
+        imagePreviewDialog?.dismiss()
+        imagePreviewDialog = null
+        (webView.parent as? android.view.ViewGroup)?.removeView(webView)
+        webView.destroy()
+        super.onDestroy()
+    }
 
     private var fileChooserCallbackRef: ValueCallback<Array<Uri>>? = null
+    private var cameraImageUri: Uri? = null
+    private var imagePreviewDialog: android.app.Dialog? = null
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode == FILE_CHOOSER_REQUEST) {
-            fileChooserCallbackRef?.onReceiveValue(
-                if (resultCode == RESULT_OK && data != null)
-                    WebChromeClient.FileChooserParams.parseResult(resultCode, data)
-                else null
-            )
+            val results: Array<Uri>? = if (resultCode == RESULT_OK) {
+                when {
+                    (data == null || data.data == null) && cameraImageUri != null -> {
+                        arrayOf(cameraImageUri!!)
+                    }
+                    data?.clipData != null -> {
+                        val clip = data.clipData!!
+                        Array(clip.itemCount) { i ->
+                            clip.getItemAt(i).uri.also { uri ->
+                                try {
+                                    contentResolver.takePersistableUriPermission(
+                                        uri,
+                                        android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                    )
+                                } catch (_: Exception) {}
+                            }
+                        }
+                    }
+                    data?.data != null -> {
+                        val uri = data.data!!
+                        try {
+                            contentResolver.takePersistableUriPermission(
+                                uri,
+                                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            )
+                        } catch (_: Exception) {}
+                        arrayOf(uri)
+                    }
+                    else -> null
+                }
+            } else null
+            fileChooserCallbackRef?.onReceiveValue(results)
             fileChooserCallbackRef = null
+            cameraImageUri = null
         }
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
     }
 
-
-    private fun showDisclaimerIfNeeded() {
-        val prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
-        if (prefs.getBoolean("disc_agreed", false)) return
-        val dialog = android.app.AlertDialog.Builder(this, android.R.style.Theme_Material_Light_Dialog_Alert)
-            .setTitle("⚠️ 免责声明")
-            .setMessage(
-                "本应用仅供学习、研究和个人合法用途。\n\n" +
-                "禁止用于：\n" +
-                "❌ 制作仿冒、钓鱼或诈骗类应用\n" +
-                "❌ 封装违法、赌博等违规网站\n" +
-                "❌ 侵犯他人知识产权\n" +
-                "❌ 任何违反法律法规的行为\n\n" +
-                "使用本应用产生的一切法律责任由使用者自行承担。"
-            )
-            .setCancelable(false)
-            .setPositiveButton("我已阅读，同意继续") { _, _ ->
-                prefs.edit().putBoolean("disc_agreed", true).apply()
-            }
-            .setNegativeButton("不同意，退出") { _, _ ->
-                finish()
-            }
-            .create()
-        dialog.show()
-    }
-
     companion object {
         const val APP_URL = "{{APP_URL}}"
+        private const val NO_SCREENSHOT = "{{NO_SCREENSHOT}}"
+        private const val WINDOW_MODE = "{{WINDOW_MODE}}"
+        private const val UA_MODE = "{{UA_MODE}}"
+        private const val ANDROID_MOBILE_UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         private const val FILE_CHOOSER_REQUEST = 1001
     }
 }

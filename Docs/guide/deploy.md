@@ -14,9 +14,18 @@
 
 主仓库有新提交时，只需在 Cloudflare Pages 控制台手动触发重新部署，或开启 **Auto Deployment** 让每次 push 自动更新。
 
+## Upstream Sync
+
+- The app can trigger `.github/workflows/sync-upstream.yml` from the admin UI.
+- Sync is PR-based: it checks `Pretic/PakrPre/main`, creates a `sync/upstream-*` branch, and opens a pull request.
+- It does not push directly to `main` and does not deploy Cloudflare Pages by itself.
+- Cloudflare Pages deploys only after the sync PR is reviewed and merged into `main`.
+- Keep `ADMIN_PASSWORD` configured before enabling this feature; sync endpoints are disabled without it.
+
 ## 项目结构
 
 ```
+
 Pakr/
 ├── .github/workflows/
 │   ├── build.yml              # 主构建流程

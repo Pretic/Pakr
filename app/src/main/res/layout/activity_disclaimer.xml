@@ -5,7 +5,6 @@
     android:orientation="vertical"
     android:background="#FFFFFF">
 
-    <!-- 顶部标题栏 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -23,25 +22,23 @@
             android:textStyle="bold"
             android:textColor="#0D0D0D"
             android:letterSpacing="0.02"
-            android:layout_marginBottom="8dp"/>
+            android:layout_marginBottom="8dp" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="请仔细阅读以下条款，使用即表示同意"
             android:textSize="14sp"
-            android:textColor="#888888"/>
-
+            android:textColor="#888888" />
     </LinearLayout>
 
-    <!-- 分隔线 -->
     <View
         android:layout_width="match_parent"
         android:layout_height="1dp"
-        android:background="#F0F0F0"/>
+        android:background="#F0F0F0" />
 
-    <!-- 可滚动正文 -->
     <ScrollView
+        android:id="@+id/scrollDisclaimer"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
@@ -57,24 +54,34 @@
             android:paddingStart="28dp"
             android:paddingEnd="28dp"
             android:paddingTop="24dp"
-            android:paddingBottom="24dp"/>
-
+            android:paddingBottom="24dp" />
     </ScrollView>
 
-    <!-- 分隔线 -->
     <View
         android:layout_width="match_parent"
         android:layout_height="1dp"
-        android:background="#F0F0F0"/>
+        android:background="#F0F0F0" />
 
-    <!-- 底部按钮区 -->
+    <CheckBox
+        android:id="@+id/cbAgree"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="我已阅读并理解以上内容，承诺合法合规使用"
+        android:textSize="14sp"
+        android:textColor="#333333"
+        android:paddingStart="28dp"
+        android:paddingEnd="28dp"
+        android:paddingTop="14dp"
+        android:paddingBottom="14dp"
+        android:button="@drawable/cb_circle_selector" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:paddingStart="20dp"
         android:paddingEnd="20dp"
-        android:paddingTop="16dp"
+        android:paddingTop="4dp"
         android:paddingBottom="32dp">
 
         <Button
@@ -85,11 +92,11 @@
             android:text="不同意"
             android:textSize="15sp"
             android:textColor="#555555"
-            android:backgroundTint="#F2F2F2"
+            android:background="@drawable/btn_rounded_gray"
             android:layout_marginEnd="12dp"
             android:stateListAnimator="@null"
             android:insetTop="0dp"
-            android:insetBottom="0dp"/>
+            android:insetBottom="0dp" />
 
         <Button
             android:id="@+id/btnAccept"
@@ -99,11 +106,9 @@
             android:text="同意并继续"
             android:textSize="15sp"
             android:textColor="#FFFFFF"
-            android:backgroundTint="#0D0D0D"
+            android:background="@drawable/btn_rounded_black"
             android:stateListAnimator="@null"
             android:insetTop="0dp"
-            android:insetBottom="0dp"/>
-
+            android:insetBottom="0dp" />
     </LinearLayout>
-
 </LinearLayout>
