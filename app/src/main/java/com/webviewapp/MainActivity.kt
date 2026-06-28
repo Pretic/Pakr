@@ -47,16 +47,17 @@ class MainActivity : AppCompatActivity() {
     private var elementBlockerScript: String? = null
     private var nativeToolGestureActive = false
     private var nativeToolTriggered = false
-    private var nativeToolStartCenterX = 0f
-    private var nativeToolStartCenterY = 0f
-    private val nativeToolLongPressDelayMs = 700L
-    private val nativeToolMoveTolerancePx: Float by lazy { 14f * resources.displayMetrics.density }
+    private var nativeToolStartX = 0f
+    private var nativeToolStartY = 0f
+    private val nativeToolLongPressDelayMs = 650L
+    private val nativeToolMoveTolerancePx: Float by lazy { 12f * resources.displayMetrics.density }
+    private val nativeToolEdgeWidthPx: Float by lazy { 28f * resources.displayMetrics.density }
     private val nativeToolLongPressRunnable = Runnable {
         if (!nativeToolGestureActive || nativeToolTriggered) return@Runnable
         nativeToolGestureActive = false
         nativeToolTriggered = true
         restoreSwipeRefreshState()
-        openPakrToolMenuFromNative(nativeToolStartCenterX, nativeToolStartCenterY)
+        openPakrToolMenuFromNative(nativeToolStartX, nativeToolStartY)
     }
 
     private val dotsFrames = arrayOf("", ".", "..", "...")
@@ -360,23 +361,30 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("ClickableViewAccessibility")
     private fun installNativeToolEntry() {
+        webView.setOnGenericMotionListener { _, event ->
+            if (isNativeSecondaryButtonEvent(event)) {
+                cancelNativeToolGesture()
+                openPakrToolMenuFromNative(event.x, event.y)
+                true
+            } else {
+                false
+            }
+        }
         webView.setOnTouchListener { _, event ->
+            if (isNativeSecondaryButtonEvent(event)) {
+                cancelNativeToolGesture()
+                openPakrToolMenuFromNative(event.x, event.y)
+                return@setOnTouchListener true
+            }
             when (event.actionMasked) {
-                MotionEvent.ACTION_POINTER_DOWN -> {
-                    if (event.pointerCount == 2) {
-                        startNativeToolGesture(event)
-                    } else if (nativeToolGestureActive) {
-                        cancelNativeToolGesture()
-                    }
+                MotionEvent.ACTION_DOWN -> {
+                    if (isNativeToolEdgeGestureStart(event)) startNativeToolEdgeGesture(event)
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (nativeToolGestureActive &&
-                        (event.pointerCount < 2 || nativeToolMovedBeyondTolerance(event))
-                    ) {
+                    if (nativeToolGestureActive && nativeToolMovedBeyondTolerance(event)) {
                         cancelNativeToolGesture()
                     }
                 }
-                MotionEvent.ACTION_POINTER_UP,
                 MotionEvent.ACTION_UP,
                 MotionEvent.ACTION_CANCEL -> cancelNativeToolGesture()
             }
@@ -384,36 +392,41 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun startNativeToolGesture(event: MotionEvent) {
-        val center = nativeToolCenter(event) ?: return
+    private fun isNativeSecondaryButtonEvent(event: MotionEvent): Boolean {
+        return (event.buttonState and MotionEvent.BUTTON_SECONDARY) != 0 &&
+            (event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS ||
+                event.actionMasked == MotionEvent.ACTION_DOWN)
+    }
+
+    private fun isNativeToolEdgeGestureStart(event: MotionEvent): Boolean {
+        if (event.pointerCount != 1 || webView.width <= 0 || webView.height <= 0) return false
+        val edgeStartX = (webView.width.toFloat() - nativeToolEdgeWidthPx).coerceAtLeast(0f)
+        return event.x >= edgeStartX && event.x <= webView.width.toFloat() &&
+            event.y >= 0f && event.y <= webView.height.toFloat()
+    }
+
+    private fun startNativeToolEdgeGesture(event: MotionEvent) {
         nativeToolGestureActive = true
         nativeToolTriggered = false
-        nativeToolStartCenterX = center.first
-        nativeToolStartCenterY = center.second
+        nativeToolStartX = event.x.coerceIn(0f, webView.width.toFloat().coerceAtLeast(1f))
+        nativeToolStartY = event.y.coerceIn(0f, webView.height.toFloat().coerceAtLeast(1f))
+        webView.parent?.requestDisallowInterceptTouchEvent(true)
         swipeRefresh.isEnabled = false
         handler.removeCallbacks(nativeToolLongPressRunnable)
         handler.postDelayed(nativeToolLongPressRunnable, nativeToolLongPressDelayMs)
     }
 
     private fun nativeToolMovedBeyondTolerance(event: MotionEvent): Boolean {
-        val center = nativeToolCenter(event) ?: return true
-        val dx = center.first - nativeToolStartCenterX
-        val dy = center.second - nativeToolStartCenterY
+        val dx = event.x - nativeToolStartX
+        val dy = event.y - nativeToolStartY
         return dx * dx + dy * dy > nativeToolMoveTolerancePx * nativeToolMoveTolerancePx
-    }
-
-    private fun nativeToolCenter(event: MotionEvent): Pair<Float, Float>? {
-        if (event.pointerCount < 2) return null
-        return Pair(
-            (event.getX(0) + event.getX(1)) / 2f,
-            (event.getY(0) + event.getY(1)) / 2f
-        )
     }
 
     private fun cancelNativeToolGesture() {
         handler.removeCallbacks(nativeToolLongPressRunnable)
         nativeToolGestureActive = false
         nativeToolTriggered = false
+        webView.parent?.requestDisallowInterceptTouchEvent(false)
         restoreSwipeRefreshState()
     }
 
