@@ -17,6 +17,7 @@
   var pointerStartY = 0;
   var pointerStartTarget = null;
   var pointerId = null;
+  var suppressNextCloseClick = false;
   var highlightTimer = null;
   var picker = null;
   var styleId = "pakr-hide-style";
@@ -779,8 +780,9 @@
     showPanel("调整字号", "当前域名：" + host + "\nA- 缩小 · A 恢复默认 · A+ 放大", actions);
   }
 
-  function showMenu(x, y, target) {
+  function showMenu(x, y, target, suppressNextClick) {
     removeUi();
+    suppressNextCloseClick = !!suppressNextClick;
     lastTarget = target && isUiElement(target) ? null : normalizeElement(target);
     var imageToPreview = imagePreviewFor(lastTarget);
     var textToCopy = copyableTextFor(lastTarget);
@@ -835,19 +837,46 @@
     menu.style.left = Math.max(10, Math.min(x, innerWidth - rect.width - 10)) + "px";
     menu.style.top = Math.max(10, Math.min(y, innerHeight - rect.height - 10)) + "px";
     setTimeout(function () {
-      document.addEventListener("click", removeUi, { once: true, capture: true });
+      var closeOnDocumentClick = function (event) {
+        if (suppressNextCloseClick) {
+          suppressNextCloseClick = false;
+          try { event.preventDefault(); } catch (_) {}
+          try { event.stopPropagation(); } catch (_) {}
+          setTimeout(function () {
+            document.addEventListener("click", closeOnDocumentClick, { once: true, capture: true });
+          }, 0);
+          return;
+        }
+        removeUi();
+      };
+      document.addEventListener("click", closeOnDocumentClick, { once: true, capture: true });
     }, 0);
   }
 
   function targetFromPoint(x, y, fallback) {
+    var stack = [];
     try {
-      return document.elementFromPoint(x, y) || fallback || null;
-    } catch (_) {
-      return fallback || null;
+      if (document.elementsFromPoint) stack = Array.prototype.slice.call(document.elementsFromPoint(x, y) || []);
+    } catch (_) {}
+    if (!stack.length) {
+      try {
+        var top = document.elementFromPoint(x, y);
+        if (top) stack.push(top);
+      } catch (_) {}
     }
+    if (fallback) stack.push(fallback);
+
+    var firstUsable = null;
+    for (var i = 0; i < stack.length; i += 1) {
+      var candidate = normalizeElement(stack[i]);
+      if (!candidate || isUiElement(candidate) || isNeverBlockable(candidate)) continue;
+      if (!firstUsable) firstUsable = candidate;
+      if (elementAreaRatio(candidate) <= 0.72) return candidate;
+    }
+    return firstUsable || fallback || null;
   }
 
-  function openMenuAt(x, y, target) {
+  function openMenuAt(x, y, target, suppressNextClick) {
     if (picker) return false;
     x = Number(x);
     y = Number(y);
@@ -855,7 +884,7 @@
     if (!isFinite(y)) y = innerHeight / 2;
     target = target || targetFromPoint(x, y, null);
     if (isUiElement(target)) return false;
-    showMenu(x, y, target);
+    showMenu(x, y, target, suppressNextClick);
     return true;
   }
 
@@ -879,8 +908,8 @@
   }
 
   window.PakrElementBlockerUI = window.PakrElementBlockerUI || {};
-  window.PakrElementBlockerUI.openMenuAt = function (x, y) {
-    return openMenuAt(x, y, targetFromPoint(Number(x), Number(y), null));
+  window.PakrElementBlockerUI.openMenuAt = function (x, y, suppressNextClick) {
+    return openMenuAt(x, y, targetFromPoint(Number(x), Number(y), null), suppressNextClick !== false);
   };
   window.PakrElementBlockerUI.close = removeUi;
 
@@ -923,7 +952,7 @@
   document.addEventListener("contextmenu", function (event) {
     if (picker || isUiElement(event.target)) return;
     event.preventDefault();
-    showMenu(event.clientX, event.clientY, event.target);
+    showMenu(event.clientX, event.clientY, event.target, false);
   }, true);
 
   document.addEventListener("touchstart", function (event) {
@@ -937,7 +966,7 @@
     touchStartY = y;
     touchStartTarget = target;
     touchTimer = setTimeout(function () {
-      openMenuAt(x, y, touchStartTarget);
+      openMenuAt(x, y, touchStartTarget, true);
       touchTimer = null;
     }, longPressDelay);
   }, true);
@@ -962,7 +991,7 @@
       pointerStartTarget = event.target;
       pointerId = event.pointerId;
       pointerTimer = setTimeout(function () {
-        openMenuAt(pointerStartX, pointerStartY, pointerStartTarget);
+        openMenuAt(pointerStartX, pointerStartY, pointerStartTarget, true);
         pointerTimer = null;
       }, longPressDelay);
     }, true);

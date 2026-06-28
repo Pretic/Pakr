@@ -81,6 +81,7 @@ class FakeDocument {
     this.target = new FakeElement("div", this);
     this.target.innerText = "Readable text";
     this.body.appendChild(this.target);
+    this.pointStack = null;
   }
 
   createElement(tagName) {
@@ -117,7 +118,11 @@ class FakeDocument {
   }
 
   elementFromPoint() {
-    return this.target;
+    return this.pointStack ? this.pointStack[0] : this.target;
+  }
+
+  elementsFromPoint() {
+    return this.pointStack || [this.target, this.body, this.documentElement];
   }
 
   walk(root = this.documentElement) {
@@ -175,6 +180,10 @@ function createFixture() {
     },
     menuCount() {
       return document.walk().filter((element) => element.className === "pakr-blocker-menu").length;
+    },
+    menuButtonCount() {
+      const menu = document.walk().find((element) => element.className === "pakr-blocker-menu");
+      return menu ? menu.children.filter((element) => element.tagName === "BUTTON").length : 0;
     }
   };
 }
@@ -197,6 +206,30 @@ test("touch long press tolerates slight finger drift before opening the menu", (
   fixture.runTimersThrough(650);
 
   assert.equal(fixture.menuCount(), 1);
+});
+
+test("touch long press menu stays open after the synthesized click on release", () => {
+  const fixture = createFixture();
+  fixture.document.dispatch("touchstart", touchEvent(fixture.document.target, 100, 140));
+
+  fixture.runTimersThrough(650);
+  fixture.document.dispatch("touchend", touchEvent(fixture.document.target, 100, 140));
+  fixture.document.dispatch("click", touchEvent(fixture.document.target, 100, 140));
+
+  assert.equal(fixture.menuCount(), 1);
+});
+
+test("native entry resolves through broad containers to a specific content target", () => {
+  const fixture = createFixture();
+  const broad = new FakeElement("div", fixture.document);
+  broad.className = "broad-container";
+  broad.rect = { left: 0, top: 0, width: 800, height: 600, right: 800, bottom: 600 };
+  fixture.document.body.appendChild(broad);
+  fixture.document.pointStack = [broad, fixture.document.target, fixture.document.body, fixture.document.documentElement];
+
+  assert.equal(fixture.context.window.PakrElementBlockerUI.openMenuAt(120, 180), true);
+
+  assert.equal(fixture.menuButtonCount(), 5);
 });
 
 test("native entry can open the menu at WebView coordinates", () => {
