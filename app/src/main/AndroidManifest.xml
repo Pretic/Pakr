@@ -17,7 +17,7 @@
             android:name=".SplashActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="true"
-            android:screenOrientation="portrait"
+            android:screenOrientation="fullUser"
             android:windowLayoutInDisplayCutoutMode="shortEdges"
             android:theme="@style/AppTheme"
             android:windowSoftInputMode="adjustResize">
@@ -31,13 +31,13 @@
             android:name=".DisclaimerActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="false"
-            android:screenOrientation="portrait" />
+            android:screenOrientation="fullUser" />
 
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="false"
-            android:screenOrientation="portrait"
+            android:screenOrientation="fullUser"
             android:windowLayoutInDisplayCutoutMode="shortEdges"
             android:windowSoftInputMode="adjustNothing" />
 

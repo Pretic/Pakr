@@ -5,6 +5,7 @@ import android.app.DownloadManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.pm.ActivityInfo
 import android.os.Environment
 import android.content.Intent
 import android.graphics.Bitmap
@@ -15,6 +16,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
@@ -26,6 +28,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
@@ -41,6 +44,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var overlay: View
     private lateinit var spinner: IOSSpinnerView
     private lateinit var loadingText: TextView
+    private var fullscreenView: View? = null
+    private var fullscreenContainer: FrameLayout? = null
+    private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
+    private var originalRequestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
 
     private val handler = Handler(Looper.getMainLooper())
     private var overlayVisible = false
@@ -215,6 +222,16 @@ class MainActivity : AppCompatActivity() {
                     handler.postDelayed(delayHideRunnable, 400)
                 }
             }
+            override fun onShowCustomView(
+                view: View,
+                callback: WebChromeClient.CustomViewCallback
+            ) {
+                showFullscreenCustomView(view, callback)
+            }
+
+            override fun onHideCustomView() {
+                hideFullscreenCustomView()
+            }
             override fun onPermissionRequest(request: PermissionRequest) {
                 request.grant(request.resources)
             }
@@ -357,6 +374,76 @@ class MainActivity : AppCompatActivity() {
             swipeRefresh.isEnabled = scrollY == 0
         }
         webView.loadUrl(APP_URL)
+    }
+
+    private fun showFullscreenCustomView(view: View, callback: WebChromeClient.CustomViewCallback) {
+        if (fullscreenView != null) {
+            callback.onCustomViewHidden()
+            return
+        }
+
+        hideOverlay()
+        originalRequestedOrientation = requestedOrientation
+        fullscreenView = view
+        fullscreenCallback = callback
+
+        (view.parent as? ViewGroup)?.removeView(view)
+        val container = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            fitsSystemWindows = false
+            addView(
+                view,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            )
+        }
+        fullscreenContainer = container
+        findViewById<FrameLayout>(android.R.id.content).addView(
+            container,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        swipeRefresh.isEnabled = false
+        configureFullscreenMode()
+        if (isYouTubeUrl(webView.url)) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+    }
+
+    private fun hideFullscreenCustomView() {
+        val view = fullscreenView ?: return
+        (view.parent as? ViewGroup)?.removeView(view)
+        fullscreenContainer?.let { container ->
+            (container.parent as? ViewGroup)?.removeView(container)
+            container.removeAllViews()
+        }
+        fullscreenView = null
+        fullscreenContainer = null
+        val callback = fullscreenCallback
+        fullscreenCallback = null
+
+        requestedOrientation = originalRequestedOrientation
+        applyDisplayMode()
+        restoreSwipeRefreshState()
+        callback?.onCustomViewHidden()
+    }
+
+    private fun isYouTubeUrl(url: String?): Boolean {
+        val host = try {
+            Uri.parse(url.orEmpty()).host?.lowercase()
+        } catch (_: Exception) {
+            null
+        } ?: return false
+        return host == "youtu.be" ||
+            host == "youtube.com" ||
+            host.endsWith(".youtube.com") ||
+            host == "youtube-nocookie.com" ||
+            host.endsWith(".youtube-nocookie.com")
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -752,6 +839,10 @@ class MainActivity : AppCompatActivity() {
     private var backPressedTime = 0L
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
+        if (fullscreenView != null) {
+            hideFullscreenCustomView()
+            return
+        }
         if (webView.canGoBack()) {
             webView.goBack()
         } else {
@@ -785,6 +876,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        hideFullscreenCustomView()
         handler.removeCallbacksAndMessages(null)
         fileChooserCallbackRef?.onReceiveValue(null)
         fileChooserCallbackRef = null
