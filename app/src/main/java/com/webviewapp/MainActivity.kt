@@ -48,6 +48,7 @@ class MainActivity : AppCompatActivity() {
     private var fullscreenContainer: FrameLayout? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
     private var originalRequestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    private var youtubePageFullscreenActive = false
 
     private val handler = Handler(Looper.getMainLooper())
     private var overlayVisible = false
@@ -368,6 +369,17 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }, "PakrClipboard")
+        webView.addJavascriptInterface(object {
+            @JavascriptInterface
+            fun enterFullscreen() {
+                handler.post { enterYouTubePageFullscreen() }
+            }
+
+            @JavascriptInterface
+            fun exitFullscreen() {
+                handler.post { exitYouTubePageFullscreen() }
+            }
+        }, "PakrVideoFullscreen")
         webView.settings.userAgentString = configuredUserAgent()
         installNativeToolEntry()
         webView.setOnScrollChangeListener { _, _, scrollY, _, _ ->
@@ -431,6 +443,30 @@ class MainActivity : AppCompatActivity() {
         applyDisplayMode()
         restoreSwipeRefreshState()
         callback?.onCustomViewHidden()
+    }
+
+    private fun enterYouTubePageFullscreen() {
+        if (!isYouTubeUrl(webView.url) || fullscreenView != null) return
+        if (!youtubePageFullscreenActive) {
+            originalRequestedOrientation = requestedOrientation
+        }
+        youtubePageFullscreenActive = true
+        hideOverlay()
+        swipeRefresh.isEnabled = false
+        configureFullscreenMode()
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+    }
+
+    private fun exitYouTubePageFullscreen() {
+        if (!youtubePageFullscreenActive) return
+        youtubePageFullscreenActive = false
+        webView.evaluateJavascript(
+            "if(window.__pakrSetYouTubeFullscreen){window.__pakrSetYouTubeFullscreen(false,true);}",
+            null
+        )
+        requestedOrientation = originalRequestedOrientation
+        applyDisplayMode()
+        restoreSwipeRefreshState()
     }
 
     private fun isYouTubeUrl(url: String?): Boolean {
@@ -780,9 +816,175 @@ class MainActivity : AppCompatActivity() {
         view.evaluateJavascript(script, null)
     }
 
+
+    private fun injectYouTubeFullscreenBridge(view: WebView) {
+        if (!isYouTubeUrl(view.url ?: webView.url)) return
+        val script = """
+            (function() {
+                if (!/(^|\.)youtube\.com${'$'}|(^|\.)youtube-nocookie\.com${'$'}|^youtu\.be${'$'}/.test(location.hostname)) return;
+                if (window.__pakrYouTubeFullscreenBridgeReady) return;
+                window.__pakrYouTubeFullscreenBridgeReady = true;
+
+                var styleId = "pakr-youtube-fullscreen-style";
+                var activePlayer = null;
+                var activeVideo = null;
+                var nativeRequestFullscreen = Element.prototype.requestFullscreen;
+                var nativeWebkitRequestFullscreen = Element.prototype.webkitRequestFullscreen;
+                var nativeExitFullscreen = document.exitFullscreen;
+                var nativeWebkitExitFullscreen = document.webkitExitFullscreen;
+
+                function callNative(method) {
+                    try {
+                        if (!window.PakrVideoFullscreen) return;
+                        if (method === "enterFullscreen" && typeof window.PakrVideoFullscreen.enterFullscreen === "function") {
+                            window.PakrVideoFullscreen.enterFullscreen();
+                        } else if (method === "exitFullscreen" && typeof window.PakrVideoFullscreen.exitFullscreen === "function") {
+                            window.PakrVideoFullscreen.exitFullscreen();
+                        }
+                    } catch (_) {}
+                }
+
+                function stopEvent(event) {
+                    try { event.preventDefault(); } catch (_) {}
+                    try { event.stopImmediatePropagation(); } catch (_) {}
+                    try { event.stopPropagation(); } catch (_) {}
+                }
+
+                function matches(element, selector) {
+                    if (!element || element.nodeType !== 1) return false;
+                    var fn = element.matches || element.webkitMatchesSelector || element.msMatchesSelector;
+                    return !!fn && fn.call(element, selector);
+                }
+
+                function closest(element, selector) {
+                    var node = element;
+                    while (node && node.nodeType === 1) {
+                        if (matches(node, selector)) return node;
+                        node = node.parentElement;
+                    }
+                    return null;
+                }
+
+                function findPlayer(target) {
+                    var selector = "#movie_player,.html5-video-player,ytd-player,.player-container,video";
+                    var fromTarget = closest(target, selector);
+                    if (fromTarget) return fromTarget;
+                    return document.querySelector("#movie_player,.html5-video-player,ytd-player,.player-container,video");
+                }
+
+                function ensureStyle() {
+                    var style = document.getElementById(styleId);
+                    if (!style) {
+                        style = document.createElement("style");
+                        style.id = styleId;
+                        document.documentElement.appendChild(style);
+                    }
+                    style.textContent =
+                        "html[data-pakr-youtube-fullscreen='1'],html[data-pakr-youtube-fullscreen='1'] body{" +
+                        "margin:0!important;overflow:hidden!important;background:#000!important;}" +
+                        "[data-pakr-youtube-fullscreen-player='1']{" +
+                        "position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;" +
+                        "max-width:none!important;max-height:none!important;z-index:2147483647!important;background:#000!important;}" +
+                        "[data-pakr-youtube-fullscreen-player='1'] video,[data-pakr-youtube-fullscreen-video='1']{" +
+                        "width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;" +
+                        "object-fit:contain!important;background:#000!important;}";
+                }
+
+                function dispatchFullscreenChange() {
+                    try { document.dispatchEvent(new Event("fullscreenchange")); } catch (_) {}
+                    try { document.dispatchEvent(new Event("webkitfullscreenchange")); } catch (_) {}
+                }
+
+                function clearFullscreen(skipNative) {
+                    document.documentElement.removeAttribute("data-pakr-youtube-fullscreen");
+                    if (document.body) document.body.removeAttribute("data-pakr-youtube-fullscreen");
+                    if (activePlayer) activePlayer.removeAttribute("data-pakr-youtube-fullscreen-player");
+                    if (activeVideo) activeVideo.removeAttribute("data-pakr-youtube-fullscreen-video");
+                    activePlayer = null;
+                    activeVideo = null;
+                    if (!skipNative) callNative("exitFullscreen");
+                    dispatchFullscreenChange();
+                    return true;
+                }
+
+                function applyFullscreen(target) {
+                    var player = findPlayer(target);
+                    if (!player) return false;
+                    var video = matches(player, "video") ? player : (player.querySelector && player.querySelector("video")) || document.querySelector("video");
+                    activePlayer = matches(player, "video") ? (player.parentElement || player) : player;
+                    activeVideo = video || null;
+                    ensureStyle();
+                    document.documentElement.setAttribute("data-pakr-youtube-fullscreen", "1");
+                    if (document.body) document.body.setAttribute("data-pakr-youtube-fullscreen", "1");
+                    activePlayer.setAttribute("data-pakr-youtube-fullscreen-player", "1");
+                    if (activeVideo) activeVideo.setAttribute("data-pakr-youtube-fullscreen-video", "1");
+                    callNative("enterFullscreen");
+                    dispatchFullscreenChange();
+                    return true;
+                }
+
+                window.__pakrSetYouTubeFullscreen = function(enabled, skipNative) {
+                    return enabled ? applyFullscreen(document.activeElement || document.querySelector("video")) : clearFullscreen(!!skipNative);
+                };
+
+                try {
+                    Element.prototype.requestFullscreen = function() {
+                        if (applyFullscreen(this)) return Promise.resolve();
+                        if (nativeRequestFullscreen) return nativeRequestFullscreen.apply(this, arguments);
+                        return Promise.resolve();
+                    };
+                } catch (_) {}
+                try {
+                    Element.prototype.webkitRequestFullscreen = function() {
+                        if (applyFullscreen(this)) return Promise.resolve();
+                        if (nativeWebkitRequestFullscreen) return nativeWebkitRequestFullscreen.apply(this, arguments);
+                        return Promise.resolve();
+                    };
+                } catch (_) {}
+                try {
+                    document.exitFullscreen = function() {
+                        clearFullscreen(false);
+                        if (nativeExitFullscreen) {
+                            try { return nativeExitFullscreen.apply(document, arguments); } catch (_) {}
+                        }
+                        return Promise.resolve();
+                    };
+                } catch (_) {}
+                try {
+                    document.webkitExitFullscreen = function() {
+                        clearFullscreen(false);
+                        if (nativeWebkitExitFullscreen) {
+                            try { return nativeWebkitExitFullscreen.apply(document, arguments); } catch (_) {}
+                        }
+                        return Promise.resolve();
+                    };
+                } catch (_) {}
+
+                document.addEventListener("click", function(event) {
+                    var target = event.target;
+                    var button = target && target.closest ? target.closest(
+                        ".ytp-fullscreen-button,[aria-label*='Full screen'],[aria-label*='Fullscreen'],[aria-label*='全屏']," +
+                        "[title*='Full screen'],[title*='Fullscreen'],[title*='全屏']"
+                    ) : null;
+                    if (!button) return;
+                    if (document.documentElement.getAttribute("data-pakr-youtube-fullscreen") === "1") {
+                        stopEvent(event);
+                        clearFullscreen(false);
+                        return;
+                    }
+                    if (applyFullscreen(button)) stopEvent(event);
+                }, true);
+
+                window.addEventListener("pagehide", function() { clearFullscreen(true); }, false);
+            })();
+        """.trimIndent()
+        view.evaluateJavascript(script, null)
+    }
+
     private fun injectWebViewEnhancements(view: WebView) {
         injectClipboardBridge(view)
         injectElementBlocker(view)
+        injectYouTubeFullscreenBridge(view)
     }
 
     private fun showOverlay() {
@@ -839,6 +1041,10 @@ class MainActivity : AppCompatActivity() {
     private var backPressedTime = 0L
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
+        if (youtubePageFullscreenActive) {
+            exitYouTubePageFullscreen()
+            return
+        }
         if (fullscreenView != null) {
             hideFullscreenCustomView()
             return
@@ -876,6 +1082,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        exitYouTubePageFullscreen()
         hideFullscreenCustomView()
         handler.removeCallbacksAndMessages(null)
         fileChooserCallbackRef?.onReceiveValue(null)
