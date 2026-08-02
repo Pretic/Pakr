@@ -14,7 +14,7 @@ on:
       upstream_repo:
         description: Allowed upstream repository
         required: false
-        default: Pretic/PakrPre
+        default: ZhangShengFan/Pakr
       upstream_branch:
         description: Upstream branch
         required: false
@@ -50,7 +50,7 @@ jobs:
           fi
 
           case "$UPSTREAM_REPO" in
-            Pretic/PakrPre) ;;
+            ZhangShengFan/Pakr) ;;
             *)
               echo "Upstream repository is not allowed: $UPSTREAM_REPO" >&2
               exit 1

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add an admin-only upstream sync workflow that checks `Pretic/PakrPre/main` and creates a GitHub pull request instead of directly modifying `main`.
+**Goal:** Add an admin-only upstream sync workflow that checks `ZhangShengFan/Pakr/main` and creates a GitHub pull request instead of directly modifying `main`.
 
 **Architecture:** Cloudflare Pages Functions expose sync endpoints that only trigger and observe GitHub Actions. GitHub Actions performs the actual git fetch, merge dry run, branch push, and PR creation inside GitHub's clean repository environment. Cloudflare deployment remains tied to normal `main` updates, so sync does not deploy unless the PR is merged.
 
@@ -15,12 +15,12 @@
 **Files:**
 - Existing backup: `backups/PakrPre-local-before-upstream-sync-20260618-210022.zip`
 - Modify: `.gitignore`
-- Modify: `Scripts/verify_pakrpre_alignment.mjs`
+- Modify: `Scripts/verify_local_invariants.mjs`
 - Modify: `Scripts/verify_templates.mjs`
 
 - [ ] Confirm the backup zip exists before code changes continue.
 - [ ] Extend verification scripts to check for the sync workflow, Worker sync routes, frontend sync controls, and admin-only protections.
-- [ ] Run `node Scripts\verify_pakrpre_alignment.mjs` and `node Scripts\verify_templates.mjs`.
+- [ ] Run `node Scripts\verify_local_invariants.mjs` and `node Scripts\verify_templates.mjs`.
 
 ### Task 2: Add GitHub Action For PR-Based Sync
 
@@ -29,7 +29,7 @@
 
 - [ ] Add `workflow_dispatch` inputs: `sync_id`, `mode`, `upstream_repo`, `upstream_branch`.
 - [ ] Set permissions to `contents: write`, `pull-requests: write`, and `actions: read`.
-- [ ] Validate `upstream_repo` against an allowlist containing `Pretic/PakrPre`.
+- [ ] Validate `upstream_repo` against an allowlist containing `ZhangShengFan/Pakr`.
 - [ ] In check mode, fetch upstream and write ahead/behind/conflict details to the job summary.
 - [ ] In PR mode, merge upstream into a new `sync/upstream-*` branch, push it, and create a PR with `gh pr create`.
 - [ ] If a merge conflict occurs, abort the merge, write conflict files to the summary, and fail the run without pushing.

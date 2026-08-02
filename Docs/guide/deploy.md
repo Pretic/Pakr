@@ -17,7 +17,7 @@
 ## Upstream Sync
 
 - The app can trigger `.github/workflows/sync-upstream.yml` from the admin UI.
-- Sync is PR-based: it checks `Pretic/PakrPre/main`, creates a `sync/upstream-*` branch, and opens a pull request.
+- Sync is PR-based: it checks `ZhangShengFan/Pakr/main`, creates a `sync/upstream-*` branch, and opens a pull request.
 - It does not push directly to `main` and does not deploy Cloudflare Pages by itself.
 - Cloudflare Pages deploys only after the sync PR is reviewed and merged into `main`.
 - Keep `ADMIN_PASSWORD` configured before enabling this feature; sync endpoints are disabled without it.

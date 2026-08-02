@@ -583,12 +583,8 @@ async function requireSyncAdmin(request, env) {
   return null;
 }
 
-function syncUpstreamRepo(env) {
-  const repo = String(env.UPSTREAM_REPO || 'Pretic/PakrPre').trim();
-  if (repo !== 'Pretic/PakrPre') {
-    throw new Error('UPSTREAM_REPO is not allowed. Allowed value: Pretic/PakrPre');
-  }
-  return repo;
+function syncUpstreamRepo() {
+  return 'ZhangShengFan/Pakr';
 }
 
 function syncUpstreamBranch(env) {
@@ -604,7 +600,7 @@ async function handleSyncTrigger(request, env, mode) {
   if (denied) return denied;
 
   const syncId = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
-  const upstreamRepo = syncUpstreamRepo(env);
+  const upstreamRepo = syncUpstreamRepo();
   const upstreamBranch = syncUpstreamBranch(env);
   const r = await gh(env,
     `/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/sync-upstream.yml/dispatches`,

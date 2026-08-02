@@ -33,7 +33,7 @@ assert.match(worker, /\/sync\/start/, 'worker should route sync PR creation');
 assert.match(worker, /requireSyncAdmin/, 'sync endpoints should require dedicated admin guard');
 assert.match(worker, /Upstream sync requires ADMIN_PASSWORD/, 'sync should be disabled without ADMIN_PASSWORD');
 assert.match(worker, /sync-upstream\.yml/, 'worker should dispatch sync workflow');
-assert.match(worker, /repo !== 'Pretic\/PakrPre'/, 'worker should allowlist upstream repo');
+assert.match(worker, /return 'ZhangShengFan\/Pakr'/, 'worker should pin the canonical upstream repo');
 assert.match(
   worker,
   /inputs:\s*\{[\s\S]*window_mode:\s*window_mode\|\|'false'/,
@@ -53,7 +53,7 @@ assert.match(buildLocal, /Replace-InFile \$disclaimerActivity "\{\{WINDOW_MODE\}
 assert.match(syncWorkflow, /name:\s*Sync Upstream/, 'sync workflow should exist');
 assert.match(syncWorkflow, /workflow_dispatch:/, 'sync workflow should be manually dispatchable');
 assert.match(syncWorkflow, /mode:/, 'sync workflow should accept a mode input');
-assert.match(syncWorkflow, /Pretic\/PakrPre/, 'sync workflow should pin allowed upstream repo');
+assert.match(syncWorkflow, /ZhangShengFan\/Pakr/, 'sync workflow should pin allowed upstream repo');
 assert.match(syncWorkflow, /contents:\s*write/, 'sync workflow should push a PR branch');
 assert.match(syncWorkflow, /pull-requests:\s*write/, 'sync workflow should create a PR');
 assert.match(syncWorkflow, /git merge --no-commit --no-ff/, 'sync workflow should dry-run merge before PR');
