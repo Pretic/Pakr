@@ -11,6 +11,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -24,17 +26,23 @@ jobs:
           assert hashlib.sha256(patch).hexdigest() == '08b93d096aa8aef04e84621814662ca5dbe2e8a989848803a072d9866dbdf649', 'Source patch checksum mismatch'
           subprocess.run(['git','apply','--check','-'], input=patch, check=True)
           subprocess.run(['git','apply','-'], input=patch, check=True)
+          fixture = Path('Scripts/prepare_ci_android.py')
+          fixture.write_text(fixture.read_text().replace('if path.name == "AndroidManifest.xml":', 'if path.suffix == ".xml":'))
+          build = Path('.github/workflows/build.yml')
+          old = '      - name: Setup Android SDK\n        uses: android-actions/setup-android@v3\n'
+          new = old + "        with:\n          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'\n          log-accepted-android-sdk-licenses: false\n"
+          assert build.read_text().count(old) == 1
+          build.write_text(build.read_text().replace(old, new))
           PY
           node --test tests/*.test.mjs
           node Scripts/verify_local_invariants.mjs
-      - name: Check public Pages response without credentials
+      - name: Compare public Pages HTML with repository snapshots
         continue-on-error: true
         run: |
           python3 - <<'PY'
-          import hashlib, re, urllib.request, urllib.error
+          import hashlib, re, urllib.request, urllib.error, subprocess, difflib
           from pathlib import Path
-          url = 'https://pakrpre.pages.dev/'
-          req = urllib.request.Request(url, headers={'User-Agent':'Pakr-maintenance-check/1.0'})
+          req = urllib.request.Request('https://pakrpre.pages.dev/', headers={'User-Agent':'Pakr-maintenance-check/1.0'})
           try:
               response = urllib.request.urlopen(req, timeout=20)
           except urllib.error.HTTPError as e:
@@ -42,15 +50,18 @@ jobs:
           with response:
               body = response.read(2_000_001)
               if len(body) > 2_000_000: raise RuntimeError('Response exceeds inspection limit')
-              text = body.decode('utf-8', errors='replace')
+              text = body.decode('utf-8', errors='replace').replace('\r\n','\n')
               title = re.search(r'<title[^>]*>(.*?)</title>', text, re.I | re.S)
-              local = Path('index.html').read_bytes().replace(b'\r\n',b'\n')
-              print('Public URL:', response.geturl())
-              print('HTTP status:', response.status)
+              print('Public URL:', response.geturl(), 'HTTP:', response.status)
               print('Title:', title.group(1)[:160] if title else '(none)')
-              print('Bytes:', len(body))
-              print('SHA256:', hashlib.sha256(body).hexdigest())
-              print('Exact normalized index.html match:', body.replace(b'\r\n',b'\n') == local)
+              print('Bytes:', len(body), 'SHA256:', hashlib.sha256(body).hexdigest())
+              for ref in ['13f665e02a70fefbd472dd3a1ea44104e402bb94', '5305f1854b89b2804de480420cb3872ea46deb40']:
+                  old = subprocess.check_output(['git','show',ref+':index.html']).decode('utf-8').replace('\r\n','\n')
+                  print('Exact normalized snapshot match:', ref, old == text)
+              local = Path('index.html').read_text()
+              difference = list(difflib.unified_diff(local.splitlines(), text.splitlines(), fromfile='repository/index.html', tofile='public/index.html', lineterm='', n=2))
+              print('Public HTML diff lines:', len(difference))
+              for line in difference[:100]: print(line[:500])
           PY
       - uses: actions/setup-java@v4
         with:
@@ -71,6 +82,6 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/src/main/assets/pakr_element_blocker.js app/src/main/java/com/webviewapp/MainActivity.kt app/src/main/java/com/webviewapp/ElementRuleStore.kt tests/pakr_element_blocker_gesture.test.mjs tests/blocker_persistence.test.mjs Scripts/prepare_ci_android.py
-          git commit -m 'fix: restore persistent element hiding and add opt-in linked-image preview'
+          git add app/src/main/assets/pakr_element_blocker.js app/src/main/java/com/webviewapp/MainActivity.kt app/src/main/java/com/webviewapp/ElementRuleStore.kt tests/pakr_element_blocker_gesture.test.mjs tests/blocker_persistence.test.mjs Scripts/prepare_ci_android.py .github/workflows/build.yml
+          git commit -m 'fix: persistent element hiding, opt-in image preview and supported SDK setup'
           git push origin HEAD:fix/blocker-stability-20260919
