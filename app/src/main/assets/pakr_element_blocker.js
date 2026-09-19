@@ -1,12 +1,25 @@
 (function () {
-  if (window.__pakrElementBlockerReady) return;
-  window.__pakrElementBlockerReady = true;
-
+  // A missing bridge must not permanently mark a document as initialized.
+  if (window.top && window.top !== window) return;
   var bridge = window.PakrElementBlocker;
   if (!bridge) return;
+  if (window.__pakrElementBlockerReady) {
+    if (window.PakrElementBlockerUI && window.PakrElementBlockerUI.refresh) {
+      window.PakrElementBlockerUI.refresh();
+    }
+    return;
+  }
 
   var host = location.hostname || "local";
   var rules = [];
+  var savedRulesJson = "[]";
+  var rulesLoadIssue = "";
+  var compiledHideCss = "";
+  var repairTimer = null;
+  var imageTapPreviewEnabled = false;
+  var imageGesture = null;
+  var maxRules = 200;
+  var maxRuleJsonLength = 512000;
   var lastTarget = null;
   var touchTimer = null;
   var touchStartX = 0;
@@ -50,16 +63,54 @@
     try {
       var raw = bridge.getRules(host) || "[]";
       var parsed = JSON.parse(raw);
-      rules = Array.isArray(parsed) ? parsed.filter(function (item) {
-        return item && item.selector;
-      }) : [];
+      if (!Array.isArray(parsed)) throw new Error("invalid rules");
+      rules = parsed.filter(function (item) {
+        return item && typeof item.selector === "string" && safeSelector(item.selector);
+      });
+      rulesLoadIssue = rules.length === parsed.length ? "" : "部分旧规则无效，请检查或重新导入。";
+      savedRulesJson = JSON.stringify(rules);
     } catch (_) {
-      rules = [];
+      rulesLoadIssue = "旧规则数据无法读取，未自动覆盖；请重新导入或重新选择元素。";
     }
   }
 
   function saveRules() {
-    bridge.saveRules(host, JSON.stringify(rules.slice(0, 200)));
+    try {
+      if (rules.length > maxRules) throw new Error("最多保存 200 条规则，请先移除不用的规则");
+      var raw = JSON.stringify(rules);
+      if (raw.length > maxRuleJsonLength) throw new Error("规则内容过长，未保存");
+      if (bridge.saveRules(host, raw) === false) throw new Error("规则保存失败，已保留原规则");
+      savedRulesJson = raw;
+      rulesLoadIssue = "";
+      return true;
+    } catch (error) {
+      rules = JSON.parse(savedRulesJson);
+      showToast(error && error.message ? error.message : "规则保存失败");
+      return false;
+    }
+  }
+
+  function loadImageTapPreference() {
+    try {
+      imageTapPreviewEnabled = !!bridge.getImageTapPreviewEnabled(host);
+    } catch (_) {
+      imageTapPreviewEnabled = false;
+    }
+  }
+
+  function toggleImageTapPreference() {
+    var enabled = !imageTapPreviewEnabled;
+    try {
+      if (!bridge.saveImageTapPreviewEnabled ||
+          bridge.saveImageTapPreviewEnabled(host, enabled) === false) {
+        throw new Error("save failed");
+      }
+      imageTapPreviewEnabled = enabled;
+      removeUi();
+      showToast(enabled ? "本站图片：单击预览，长按查看链接" : "本站图片：已恢复原点击行为");
+    } catch (_) {
+      showToast("设置保存失败，原设置未更改");
+    }
   }
 
   function normalizeFontScale(value) {
@@ -97,6 +148,7 @@
   }
 
   function applyFontScale() {
+    if (!document.documentElement) return;
     var handledByNative = applyNativeFontScale();
     var style = document.getElementById(fontStyleId);
     if (handledByNative) {
@@ -138,16 +190,18 @@
   }
 
   function applyRules() {
+    if (!document.documentElement) return;
     var style = document.getElementById(styleId);
     if (!style) {
       style = document.createElement("style");
       style.id = styleId;
       document.documentElement.appendChild(style);
     }
-    style.textContent = rules.map(function (rule) {
+    compiledHideCss = rules.map(function (rule) {
       var selector = safeSelector(rule.selector);
       return selector ? selector + "{display:none!important;visibility:hidden!important;}" : "";
     }).filter(Boolean).join("\n");
+    if (style.textContent !== compiledHideCss) style.textContent = compiledHideCss;
   }
 
   function isUiElement(el) {
@@ -164,10 +218,42 @@
     try { bridge.toast(message); } catch (_) {}
   }
 
+  function isStableToken(value) {
+    return value.length <= 100 && !/(?:\d{6,}|[a-f0-9]{12,})/i.test(value) &&
+      !/^(?:css-[a-z0-9]{6,}|sc-[a-zA-Z]{5,}|ember\d+|react-select-\d+)/.test(value) &&
+      !/^(?:active|selected|hover|focus|open|closed|loading|loaded|is-.+)$/.test(value);
+  }
+
   function cleanClasses(el) {
     return Array.prototype.slice.call(el.classList || []).filter(function (name) {
-      return /^[a-zA-Z0-9_-]{2,}$/.test(name) && name.indexOf(uiPrefix) !== 0;
+      return /^[a-zA-Z0-9_-]{2,}$/.test(name) && name.indexOf(uiPrefix) !== 0 && isStableToken(name);
     }).slice(0, 3);
+  }
+
+  function preciseSelector(el, selector) {
+    try {
+      return (!el.matches || el.matches(selector)) && document.querySelectorAll(selector).length <= 5;
+    } catch (_) { return false; }
+  }
+
+  function imageSelector(el) {
+    var src = el.getAttribute("src") || el.getAttribute("data-src");
+    if (!src || src.length > 1024 || /^(?:data|blob):/i.test(src)) return "";
+    var attribute = el.getAttribute("src") ? "src" : "data-src";
+    var selector = 'img[' + attribute + '="' + attrEscape(src) + '"]';
+    try {
+      var url = new URL(src, location.href);
+      var cacheOnly = /\.(?:avif|webp|png|jpe?g|gif|bmp|svg)$/i.test(url.pathname);
+      url.searchParams.forEach(function (_, key) {
+        if (!/^(?:_|v|ver|version|t|ts|timestamp|cache|cb|w|h|width|height|q|quality|format|utm_.+)$/i.test(key)) cacheOnly = false;
+      });
+      // Do not discard identity-bearing query parameters (e.g. /image?id=42).
+      if (cacheOnly && src.indexOf("?") >= 0 && src.indexOf("#") < 0) {
+        var base = src.split("?")[0];
+        selector = 'img[' + attribute + '="' + attrEscape(base) + '"],img[' + attribute + '^="' + attrEscape(base + "?") + '"]';
+      }
+    } catch (_) {}
+    return preciseSelector(el, selector) ? selector : "";
   }
 
   function nthOfType(el) {
@@ -197,15 +283,22 @@
     if (!el || isNeverBlockable(el)) return "";
     var tag = el.tagName.toLowerCase();
 
-    if (el.id && /^[a-zA-Z][\w:-]*$/.test(el.id)) {
-      return "#" + cssEscape(el.id);
+    var stableAttributes = ["data-ad-slot", "data-ad-unit", "data-testid", "data-test", "aria-label"];
+    for (var i = 0; i < stableAttributes.length; i += 1) {
+      var value = el.getAttribute(stableAttributes[i]);
+      if (!value || value.length > 180) continue;
+      var byAttribute = tag + '[' + stableAttributes[i] + '="' + attrEscape(value) + '"]';
+      if (preciseSelector(el, byAttribute)) return byAttribute;
     }
 
-    if (tag === "img" && el.getAttribute("src")) {
-      var src = el.getAttribute("src").split("?")[0];
-      if (src.length > 12 && src.length < 180) {
-        return 'img[src="' + attrEscape(src) + '"]';
-      }
+    if (el.id && /^[a-zA-Z][\w:-]*$/.test(el.id) && isStableToken(el.id)) {
+      var byId = "#" + cssEscape(el.id);
+      if (preciseSelector(el, byId)) return byId;
+    }
+
+    if (tag === "img") {
+      var byImage = imageSelector(el);
+      if (byImage) return byImage;
     }
 
     var classes = cleanClasses(el);
@@ -223,7 +316,7 @@
       if (curTag === "html" || curTag === "body") break;
       var curClasses = cleanClasses(cur);
       var part = curTag;
-      if (cur.id && /^[a-zA-Z][\w:-]*$/.test(cur.id)) {
+      if (cur.id && /^[a-zA-Z][\w:-]*$/.test(cur.id) && isStableToken(cur.id)) {
         part = "#" + cssEscape(cur.id);
         parts.unshift(part);
         break;
@@ -442,11 +535,13 @@
     var parsed = JSON.parse(raw);
     var imported = Array.isArray(parsed) ? parsed : parsed && parsed.rules;
     if (!Array.isArray(imported)) throw new Error("规则格式不正确");
+    if (imported.length > maxRules) throw new Error("最多导入 200 条规则，请分批整理");
     var seen = {};
     return imported.map(function (rule) {
       if (typeof rule === "string") rule = { selector: rule };
       if (!rule || typeof rule.selector !== "string") return null;
       var selector = rule.selector.trim();
+      if (selector.length > 2048) throw new Error("单条规则过长");
       if (!selector || !safeSelector(selector) || seen[selector]) return null;
       seen[selector] = true;
       return {
@@ -454,7 +549,7 @@
         label: String(rule.label || "导入元素").slice(0, 120),
         createdAt: Number(rule.createdAt) || Date.now()
       };
-    }).filter(Boolean).slice(0, 200);
+    }).filter(Boolean);
   }
 
   function showExportPanel() {
@@ -523,9 +618,8 @@
             rules.push(rule);
           }
         });
-        rules = rules.slice(0, 200);
       }
-      saveRules();
+      if (!saveRules()) return;
       applyRules();
       showToast("已导入 " + imported.length + " 条规则");
       showRulesPanel();
@@ -555,7 +649,7 @@
     actions.push(toolbar);
 
     if (!rules.length) {
-      showPanel("已屏蔽元素", "当前域名下还没有屏蔽规则。", actions);
+      showPanel("已屏蔽元素", "域名：" + host + "\n" + (rulesLoadIssue || "当前域名下还没有屏蔽规则。"), actions);
       return;
     }
 
@@ -566,12 +660,14 @@
       row.className = uiPrefix + "rule-row";
       var text = document.createElement("div");
       text.className = uiPrefix + "rule-text";
-      text.textContent = (rule.label || "元素") + "\n" + rule.selector;
+      var hits = 0;
+      try { hits = document.querySelectorAll(rule.selector).length; } catch (_) {}
+      text.textContent = (rule.label || "元素") + " · 本页匹配 " + hits + " 个\n" + rule.selector;
       var btn = document.createElement("button");
       btn.textContent = "恢复";
       btn.addEventListener("click", function () {
         rules.splice(index, 1);
-        saveRules();
+        if (!saveRules()) return;
         applyRules();
         showRulesPanel();
       });
@@ -586,12 +682,13 @@
     clear.textContent = "清空当前域名规则";
     clear.addEventListener("click", function () {
       rules = [];
-      saveRules();
+      if (!saveRules()) return;
       applyRules();
       showRulesPanel();
     });
     actions.push(clear);
-    showPanel("已屏蔽元素", "域名：" + host, actions);
+    showPanel("已屏蔽元素", "域名：" + host + " · 已保存 " + rules.length + " 条\n" +
+      (rulesLoadIssue || "匹配 0 个：元素尚未出现，或页面结构已改变。"), actions);
   }
 
   function addRule(el) {
@@ -614,7 +711,11 @@
       label: labelFor(el),
       createdAt: Date.now()
     });
-    saveRules();
+    if (selector.length > 2048 || !saveRules()) {
+      rules = JSON.parse(savedRulesJson);
+      if (selector.length > 2048) showToast("规则过长，请选择更稳定的上级元素");
+      return false;
+    }
     applyRules();
     showToast("已屏蔽元素");
     return true;
@@ -793,6 +894,18 @@
     menu.className = uiPrefix + "menu";
 
     var items = [];
+    if (linkToCopy && /^https?:\/\//i.test(linkToCopy)) {
+      items.push({
+        label: "查看链接",
+        action: function () { removeUi(); location.assign(linkToCopy); }
+      });
+    }
+    if (bridge.saveImageTapPreviewEnabled) {
+      items.push({
+        label: imageTapPreviewEnabled ? "关闭图片点击预览" : "开启图片点击预览",
+        action: toggleImageTapPreference
+      });
+    }
     if (imageToPreview) {
       items.push({
         label: "图片预览",
@@ -914,7 +1027,7 @@
   window.PakrElementBlockerUI.close = removeUi;
 
   function installUiCss() {
-    if (document.getElementById(uiStyleId)) return;
+    if (!document.documentElement || document.getElementById(uiStyleId)) return;
     var css = document.createElement("style");
     css.id = uiStyleId;
     css.textContent =
@@ -1006,9 +1119,87 @@
     });
   }
 
-  installUiCss();
-  loadRules();
-  applyRules();
-  loadFontScale();
-  applyFontScale();
+  function refreshFromNative() {
+    loadRules();
+    loadImageTapPreference();
+    installUiCss();
+    applyRules();
+    loadFontScale();
+    applyFontScale();
+  }
+
+  function scheduleStyleRepair() {
+    if (repairTimer !== null) return;
+    repairTimer = setTimeout(function () {
+      repairTimer = null;
+      if (!document.documentElement) return;
+      var style = document.getElementById(styleId);
+      if (!style || style.textContent !== compiledHideCss) applyRules();
+      installUiCss();
+    }, 80);
+  }
+
+  function linkedImageTarget(target) {
+    var el = normalizeElement(target);
+    if (!el || isUiElement(el) || !el.tagName || el.tagName.toLowerCase() !== "img") return null;
+    if (!el.closest || el.closest("button,[role='button'],[data-pakr-image-tap='navigate']")) return null;
+    var link = el.closest("a[href]");
+    if (!link || link.hasAttribute("download") || !/^https?:\/\//i.test(link.href)) return null;
+    var src = absoluteUrlFor(el.currentSrc || el.src || el.getAttribute("src"));
+    if (!/^(?:https?:\/\/|data:image\/)/i.test(src) || src.length > 8000) return null;
+    return { element: el, src: src };
+  }
+
+  // No touch event is cancelled: scrolling, pinch zoom and the long-press menu keep working.
+  document.addEventListener("touchstart", function (event) {
+    var touch = event.touches && event.touches[0];
+    imageGesture = touch ? {
+      target: event.target, x: touch.clientX, y: touch.clientY, at: Date.now(),
+      cancelled: event.touches.length !== 1, endedAt: 0
+    } : null;
+  }, true);
+  document.addEventListener("touchmove", function (event) {
+    if (!imageGesture) return;
+    var touch = event.touches && event.touches[0];
+    if (!touch || event.touches.length !== 1 || movedBeyondLongPressTolerance(
+      touch.clientX, touch.clientY, imageGesture.x, imageGesture.y)) imageGesture.cancelled = true;
+  }, true);
+  document.addEventListener("touchend", function () {
+    if (!imageGesture) return;
+    imageGesture.endedAt = Date.now();
+    if (imageGesture.endedAt - imageGesture.at >= longPressDelay) imageGesture.cancelled = true;
+  }, true);
+  document.addEventListener("touchcancel", function () {
+    if (imageGesture) { imageGesture.cancelled = true; imageGesture.endedAt = Date.now(); }
+  }, true);
+  document.addEventListener("click", function (event) {
+    if (!imageTapPreviewEnabled || picker || suppressNextCloseClick || isUiElement(event.target)) return;
+    if (event.button > 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.detail === 0) return;
+    if (imageGesture && imageGesture.target === event.target &&
+        Date.now() - (imageGesture.endedAt || imageGesture.at) < 1200 && imageGesture.cancelled) return;
+    var image = linkedImageTarget(event.target);
+    if (!image) return;
+    try { bridge.previewImage(image.src); } catch (_) { return; }
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+  }, true);
+
+  window.PakrElementBlockerUI.refresh = refreshFromNative;
+  document.addEventListener("DOMContentLoaded", refreshFromNative, false);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) refreshFromNative();
+  }, false);
+  if (window.addEventListener) {
+    window.addEventListener("pageshow", refreshFromNative, false);
+    window.addEventListener("popstate", scheduleStyleRepair, false);
+    window.addEventListener("hashchange", scheduleStyleRepair, false);
+  }
+  if (typeof MutationObserver !== "undefined") {
+    new MutationObserver(scheduleStyleRepair).observe(document, {
+      childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["id"]
+    });
+  }
+  refreshFromNative();
+  window.__pakrElementBlockerReady = true;
 })();
