@@ -130,7 +130,7 @@ class FakeDocument {
   }
 }
 
-function createFixture() {
+function createFixture(runScript = true) {
   const document = new FakeDocument();
   const timerQueue = new Map();
   let nextTimerId = 1;
@@ -160,7 +160,7 @@ function createFixture() {
     }
   };
   context.window = context;
-  vm.runInNewContext(readFileSync(SCRIPT_PATH, "utf8"), context, { filename: SCRIPT_PATH });
+  if (runScript) vm.runInNewContext(readFileSync(SCRIPT_PATH, "utf8"), context, { filename: SCRIPT_PATH });
 
   return {
     context,
@@ -239,4 +239,40 @@ test("native entry can open the menu at WebView coordinates", () => {
   assert.equal(fixture.context.window.PakrElementBlockerUI.openMenuAt(120, 180), true);
 
   assert.equal(fixture.menuCount(), 1);
+});
+
+test("late native bridge can initialize after an earlier bridge-free attempt", () => {
+  const fixture = createFixture(false);
+  const bridge = fixture.context.PakrElementBlocker;
+  delete fixture.context.PakrElementBlocker;
+  const script = readFileSync(SCRIPT_PATH, "utf8");
+  vm.runInNewContext(script, fixture.context);
+  assert.equal(fixture.context.__pakrElementBlockerReady, undefined);
+  fixture.context.PakrElementBlocker = bridge;
+  vm.runInNewContext(script, fixture.context);
+  assert.equal(fixture.context.__pakrElementBlockerReady, true);
+});
+
+test("repeat injection refreshes native rules instead of returning stale state", () => {
+  const fixture = createFixture();
+  fixture.context.PakrElementBlocker.getRules = () => JSON.stringify([{ selector: ".new-ad" }]);
+  vm.runInNewContext(readFileSync(SCRIPT_PATH, "utf8"), fixture.context);
+  assert.match(fixture.document.getElementById("pakr-hide-style").textContent, /\.new-ad/);
+  assert.equal(fixture.document.listeners.get("contextmenu").length, 1);
+});
+
+test("repeat injection repairs a removed hiding style", () => {
+  const fixture = createFixture();
+  fixture.document.getElementById("pakr-hide-style").remove();
+  vm.runInNewContext(readFileSync(SCRIPT_PATH, "utf8"), fixture.context);
+  assert.ok(fixture.document.getElementById("pakr-hide-style"));
+});
+
+test("corrupt native payload does not erase already loaded rules", () => {
+  const fixture = createFixture();
+  fixture.context.PakrElementBlocker.getRules = () => JSON.stringify([{ selector: ".saved-ad" }]);
+  fixture.context.PakrElementBlockerUI.refresh();
+  fixture.context.PakrElementBlocker.getRules = () => '[{"selector":"broken';
+  fixture.context.PakrElementBlockerUI.refresh();
+  assert.match(fixture.document.getElementById("pakr-hide-style").textContent, /\.saved-ad/);
 });

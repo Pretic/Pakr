@@ -30,6 +30,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.TextView
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import androidx.appcompat.app.AppCompatActivity
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import androidx.core.view.WindowCompat
@@ -53,6 +55,7 @@ class MainActivity : AppCompatActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private var overlayVisible = false
     private var elementBlockerScript: String? = null
+    private val elementRuleStore by lazy { ElementRuleStore(this) }
     private var nativeToolGestureActive = false
     private var nativeToolTriggered = false
     private var nativeToolStartX = 0f
@@ -311,16 +314,26 @@ class MainActivity : AppCompatActivity() {
         webView.addJavascriptInterface(object {
             @JavascriptInterface
             fun getRules(host: String): String {
-                return getSharedPreferences("element_blocker", Context.MODE_PRIVATE)
-                    .getString(normalizeRuleHost(host), "[]") ?: "[]"
+                return elementRuleStore.load(normalizeRuleHost(host))
             }
 
             @JavascriptInterface
-            fun saveRules(host: String, rulesJson: String) {
-                getSharedPreferences("element_blocker", Context.MODE_PRIVATE)
+            fun saveRules(host: String, rulesJson: String): Boolean {
+                return elementRuleStore.save(normalizeRuleHost(host), rulesJson)
+            }
+
+            @JavascriptInterface
+            fun getImageTapPreviewEnabled(host: String): Boolean {
+                return getSharedPreferences("reader_settings", Context.MODE_PRIVATE)
+                    .getBoolean("${normalizeRuleHost(host)}:image_tap_preview", false)
+            }
+
+            @JavascriptInterface
+            fun saveImageTapPreviewEnabled(host: String, enabled: Boolean): Boolean {
+                return getSharedPreferences("reader_settings", Context.MODE_PRIVATE)
                     .edit()
-                    .putString(normalizeRuleHost(host), rulesJson.take(50_000))
-                    .apply()
+                    .putBoolean("${normalizeRuleHost(host)}:image_tap_preview", enabled)
+                    .commit()
             }
 
             @JavascriptInterface
@@ -385,6 +398,7 @@ class MainActivity : AppCompatActivity() {
         webView.setOnScrollChangeListener { _, _, scrollY, _, _ ->
             swipeRefresh.isEnabled = scrollY == 0
         }
+        installElementBlockerAtDocumentStart()
         webView.loadUrl(APP_URL)
     }
 
@@ -743,15 +757,30 @@ class MainActivity : AppCompatActivity() {
         view.evaluateJavascript(js, null)
     }
 
-    private fun injectElementBlocker(view: WebView) {
-        val script = try {
+    private fun readElementBlockerScript(): String? {
+        return try {
             elementBlockerScript ?: assets.open("pakr_element_blocker.js")
                 .bufferedReader()
                 .use { it.readText() }
                 .also { elementBlockerScript = it }
         } catch (_: Exception) {
-            return
+            null
         }
+    }
+
+    private fun installElementBlockerAtDocumentStart() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        val script = readElementBlockerScript() ?: return
+        try {
+            // The script itself rejects child frames. Older WebViews use lifecycle injection below.
+            WebViewCompat.addDocumentStartJavaScript(webView, script, setOf("*"))
+        } catch (_: Exception) {
+            // onPageCommitVisible/onPageFinished remain the compatibility fallback.
+        }
+    }
+
+    private fun injectElementBlocker(view: WebView) {
+        val script = readElementBlockerScript() ?: return
         view.evaluateJavascript(script, null)
     }
 
@@ -1067,6 +1096,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         webView.onResume()
         webView.resumeTimers()
+        injectElementBlocker(webView)
     }
 
     override fun onPause() {
