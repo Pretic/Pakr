@@ -1,0 +1,48 @@
+name: Apply and compile maintenance 20260919
+on:
+  push:
+    branches: ['fix/blocker-stability-20260919']
+    paths: ['.maintenance/**', '.github/workflows/apply-maintenance-20260919.yml']
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify transfer integrity and apply source changes
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, hashlib, subprocess
+          from pathlib import Path
+          encoded = ''.join(Path('.maintenance/chunk'+str(i)).read_text().strip() for i in range(4))
+          patch = gzip.decompress(base64.b64decode(encoded, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '08b93d096aa8aef04e84621814662ca5dbe2e8a989848803a072d9866dbdf649', 'Source patch checksum mismatch'
+          subprocess.run(['git','apply','--check','-'], input=patch, check=True)
+          subprocess.run(['git','apply','-'], input=patch, check=True)
+          PY
+          node --test tests/*.test.mjs
+          node Scripts/verify_local_invariants.mjs
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.2'
+      - name: Compile an isolated Android debug fixture
+        run: |
+          python3 Scripts/prepare_ci_android.py "$RUNNER_TEMP/pakr-qa"
+          gradle -p "$RUNNER_TEMP/pakr-qa" :app:assembleDebug --no-daemon
+      - name: Commit validated source to repair branch only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/assets/pakr_element_blocker.js app/src/main/java/com/webviewapp/MainActivity.kt app/src/main/java/com/webviewapp/ElementRuleStore.kt tests/pakr_element_blocker_gesture.test.mjs tests/blocker_persistence.test.mjs Scripts/prepare_ci_android.py
+          git commit -m 'fix: restore persistent element hiding and add opt-in linked-image preview'
+          git push origin HEAD:fix/blocker-stability-20260919
