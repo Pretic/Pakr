@@ -20,8 +20,6 @@
   var favoritesLoadIssue = "";
   var compiledHideCss = "";
   var repairTimer = null;
-  var imageTapPreviewEnabled = false;
-  var imageGesture = null;
   var maxRules = 200;
   var maxRuleJsonLength = 512000;
   var maxFavorites = 200;
@@ -178,29 +176,6 @@
     if (!saveFavorites()) return;
     removeUi();
     showToast(existing >= 0 ? "已更新收藏" : "已收藏网页");
-  }
-
-  function loadImageTapPreference() {
-    try {
-      imageTapPreviewEnabled = !!bridge.getImageTapPreviewEnabled(host);
-    } catch (_) {
-      imageTapPreviewEnabled = false;
-    }
-  }
-
-  function toggleImageTapPreference() {
-    var enabled = !imageTapPreviewEnabled;
-    try {
-      if (!bridge.saveImageTapPreviewEnabled ||
-          bridge.saveImageTapPreviewEnabled(host, enabled) === false) {
-        throw new Error("save failed");
-      }
-      imageTapPreviewEnabled = enabled;
-      removeUi();
-      showToast(enabled ? "本站图片：单击预览，长按查看链接" : "本站图片：已恢复原点击行为");
-    } catch (_) {
-      showToast("设置保存失败，原设置未更改");
-    }
   }
 
   function normalizeFontScale(value) {
@@ -1225,11 +1200,6 @@
     list.appendChild(makeSettingsItem("网页收藏", favorites.length + " 个收藏 · 查看、编辑与管理", showFavoritesPanel));
     list.appendChild(makeSettingsItem("已屏蔽列表", rules.length + " 条规则 · 导入、导出与恢复", showRulesPanel));
     list.appendChild(makeSettingsItem("网页字号", fontScale === "large" ? "大" : fontScale === "small" ? "小" : "默认", showFontPanel));
-    list.appendChild(makeSettingsItem(
-      "图片点击预览",
-      imageTapPreviewEnabled ? "当前网站已开启" : "当前网站未开启",
-      toggleImageTapPreference
-    ));
     showPanel("设置", "当前网站：" + host + "\n收藏和首页网址属于整个 App；字号和屏蔽规则按域名保存，更换首页域名时会迁移屏蔽规则。", [list]);
   }
 
@@ -1492,7 +1462,6 @@
   function refreshFromNative() {
     loadRules();
     loadFavorites();
-    loadImageTapPreference();
     installUiCss();
     applyRules();
     loadFontScale();
@@ -1509,52 +1478,6 @@
       installUiCss();
     }, 80);
   }
-
-  function linkedImageTarget(target) {
-    var el = normalizeElement(target);
-    if (!el || isUiElement(el) || !el.tagName || el.tagName.toLowerCase() !== "img") return null;
-    if (!el.closest || el.closest("[data-pakr-image-tap='navigate']")) return null;
-    var link = el.closest("a[href]");
-    if (!link || link.hasAttribute("download") || !/^https?:\/\//i.test(link.href)) return null;
-    var src = absoluteUrlFor(el.currentSrc || el.src || el.getAttribute("src"));
-    if (!/^(?:https?:\/\/|data:image\/)/i.test(src) || src.length > 8000) return null;
-    return { element: el, src: src };
-  }
-
-  // No touch event is cancelled: scrolling, pinch zoom and the long-press menu keep working.
-  document.addEventListener("touchstart", function (event) {
-    var touch = event.touches && event.touches[0];
-    imageGesture = touch ? {
-      target: event.target, x: touch.clientX, y: touch.clientY, at: Date.now(),
-      cancelled: event.touches.length !== 1, endedAt: 0
-    } : null;
-  }, true);
-  document.addEventListener("touchmove", function (event) {
-    if (!imageGesture) return;
-    var touch = event.touches && event.touches[0];
-    if (!touch || event.touches.length !== 1 || movedBeyondLongPressTolerance(
-      touch.clientX, touch.clientY, imageGesture.x, imageGesture.y)) imageGesture.cancelled = true;
-  }, true);
-  document.addEventListener("touchend", function () {
-    if (!imageGesture) return;
-    imageGesture.endedAt = Date.now();
-    if (imageGesture.endedAt - imageGesture.at >= longPressDelay) imageGesture.cancelled = true;
-  }, true);
-  document.addEventListener("touchcancel", function () {
-    if (imageGesture) { imageGesture.cancelled = true; imageGesture.endedAt = Date.now(); }
-  }, true);
-  document.addEventListener("click", function (event) {
-    if (!imageTapPreviewEnabled || picker || suppressNextCloseClick || isUiElement(event.target)) return;
-    if (event.button > 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-    if (imageGesture && imageGesture.target === event.target &&
-        Date.now() - (imageGesture.endedAt || imageGesture.at) < 1200 && imageGesture.cancelled) return;
-    var image = linkedImageTarget(event.target);
-    if (!image) return;
-    try { bridge.previewImage(image.src); } catch (_) { return; }
-    event.preventDefault();
-    event.stopPropagation();
-    if (event.stopImmediatePropagation) event.stopImmediatePropagation();
-  }, true);
 
   window.PakrElementBlockerUI.refresh = refreshFromNative;
   document.addEventListener("DOMContentLoaded", refreshFromNative, false);

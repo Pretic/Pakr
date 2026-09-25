@@ -22,11 +22,12 @@ test('early injection is feature gated and resumed pages are refreshed', () => {
   assert.match(main, /override fun onResume\(\)[\s\S]*injectElementBlocker\(webView\)/);
 });
 
-test('linked image override is per-site and opt-in with navigation escape hatches', () => {
-  assert.match(main, /getBoolean\("\$\{normalizeRuleHost\(host\)\}:image_tap_preview", false\)/);
-  assert.match(script, /imageTapPreviewEnabled = false/);
-  assert.doesNotMatch(script, /event\.detail === 0/);
-  assert.match(script, /data-pakr-image-tap='navigate'/);
+test('normal image clicks are not intercepted while manual context preview remains available', () => {
+  assert.doesNotMatch(main, /ImageTapPreviewEnabled|image_tap_preview/);
+  assert.doesNotMatch(script, /imageTapPreviewEnabled|imageGesture|linkedImageTarget/);
+  assert.doesNotMatch(script, /图片点击预览/);
+  assert.match(script, /label: "图片预览"/);
+  assert.match(script, /bridge\.previewImage\(imageToPreview\)/);
   assert.match(script, /label: "查看链接"/);
 });
 

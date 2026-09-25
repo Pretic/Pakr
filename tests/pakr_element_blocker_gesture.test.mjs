@@ -47,7 +47,6 @@ class FakeElement {
     while (node) {
       for (const part of selector.split(",").map((item) => item.trim())) {
         if (part === "[data-pakr-ui='1']" && node.dataset?.pakrUi === "1") return node;
-        if (part === "[data-pakr-image-tap='navigate']" && node.dataset?.pakrImageTap === "navigate") return node;
         if (part === "a[href]" && node.tagName === "A" && node.hasAttribute("href")) return node;
         if (part === "button" && node.tagName === "BUTTON") return node;
         if (part === "[role='button']" && node.getAttribute("role") === "button") return node;
@@ -75,7 +74,6 @@ class FakeElement {
     if (name === "href") this.href = String(value);
     if (name === "src") this.src = String(value);
     if (name === "role") this.role = String(value);
-    if (name === "data-pakr-image-tap") this.dataset.pakrImageTap = String(value);
   }
 
   scrollIntoView() {}
@@ -200,8 +198,6 @@ function createFixture(runScript = true, options = {}) {
         return options.migratedRules || 0;
       },
       exportJson: () => true,
-      getImageTapPreviewEnabled: () => !!options.imageTapPreviewEnabled,
-      saveImageTapPreviewEnabled: () => true,
       getFontScale: () => "normal",
       applyFontScale: () => {},
       toast: () => {},
@@ -344,7 +340,7 @@ test("context menu exposes favorites and a consolidated settings screen", () => 
   const titles = fixture.document.walk()
     .filter((element) => element.className === "pakr-blocker-settings-title")
     .map((element) => element.textContent);
-  assert.deepEqual(titles, ["首页网址", "网页收藏", "已屏蔽列表", "网页字号", "图片点击预览"]);
+  assert.deepEqual(titles, ["首页网址", "网页收藏", "已屏蔽列表", "网页字号"]);
 });
 
 test("favorite action persists the current page through the native bridge", () => {
@@ -384,11 +380,10 @@ test("a menu opened over linked text lets its first command run", () => {
   assert.ok(titles.includes("首页网址"));
 });
 
-test("opt-in image preview intercepts keyboard-style clicks on linked button images", () => {
-  const fixture = createFixture(true, { imageTapPreviewEnabled: true });
+test("ordinary linked-image clicks remain entirely owned by the web page", () => {
+  const fixture = createFixture();
   const link = new FakeElement("a", fixture.document);
   link.setAttribute("href", "https://target.example/article");
-  link.setAttribute("role", "button");
   const image = new FakeElement("img", fixture.document);
   image.setAttribute("src", "https://cdn.example/cover.jpg");
   image.currentSrc = "https://cdn.example/cover.jpg";
@@ -409,9 +404,27 @@ test("opt-in image preview intercepts keyboard-style clicks on linked button ima
   };
   fixture.document.dispatch("click", clickEvent);
 
+  assert.deepEqual(fixture.previewedImages, []);
+  assert.equal(clickEvent.defaultPrevented, undefined);
+  assert.equal(clickEvent.__immediateStopped, undefined);
+});
+
+test("manual image preview remains available from the context menu", () => {
+  const fixture = createFixture();
+  const link = new FakeElement("a", fixture.document);
+  link.setAttribute("href", "https://target.example/article");
+  const image = new FakeElement("img", fixture.document);
+  image.setAttribute("src", "https://cdn.example/cover.jpg");
+  image.currentSrc = "https://cdn.example/cover.jpg";
+  link.appendChild(image);
+  fixture.document.body.appendChild(link);
+  fixture.document.pointStack = [image, link, fixture.document.body, fixture.document.documentElement];
+
+  fixture.context.window.PakrElementBlockerUI.openMenuAt(120, 180);
+  assert.ok(fixture.menuButtonLabels().includes("图片预览"));
+  fixture.clickMenuButton("图片预览");
+
   assert.deepEqual(fixture.previewedImages, ["https://cdn.example/cover.jpg"]);
-  assert.equal(clickEvent.defaultPrevented, true);
-  assert.equal(clickEvent.__immediateStopped, true);
 });
 
 test("saving a replacement home URL migrates rules from the previously saved home domain", () => {

@@ -384,20 +384,6 @@ class MainActivity : AppCompatActivity() {
             }
 
             @JavascriptInterface
-            fun getImageTapPreviewEnabled(host: String): Boolean {
-                return getSharedPreferences("reader_settings", Context.MODE_PRIVATE)
-                    .getBoolean("${normalizeRuleHost(host)}:image_tap_preview", false)
-            }
-
-            @JavascriptInterface
-            fun saveImageTapPreviewEnabled(host: String, enabled: Boolean): Boolean {
-                return getSharedPreferences("reader_settings", Context.MODE_PRIVATE)
-                    .edit()
-                    .putBoolean("${normalizeRuleHost(host)}:image_tap_preview", enabled)
-                    .commit()
-            }
-
-            @JavascriptInterface
             fun getFontScale(host: String): String {
                 return getSharedPreferences("reader_settings", Context.MODE_PRIVATE)
                     .getString("${normalizeRuleHost(host)}:font_scale", "normal") ?: "normal"
