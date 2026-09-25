@@ -37,6 +37,8 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import org.json.JSONTokener
+import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
 
@@ -56,6 +58,9 @@ class MainActivity : AppCompatActivity() {
     private var overlayVisible = false
     private var elementBlockerScript: String? = null
     private val elementRuleStore by lazy { ElementRuleStore(this) }
+    private val appSettingsStore by lazy { AppSettingsStore(this) }
+    private val bridgeToken = UUID.randomUUID().toString()
+    private var pendingJsonExport: String? = null
     private var nativeToolGestureActive = false
     private var nativeToolTriggered = false
     private var nativeToolStartX = 0f
@@ -323,6 +328,43 @@ class MainActivity : AppCompatActivity() {
             }
 
             @JavascriptInterface
+            fun getFavorites(token: String): String {
+                return if (isBridgeAuthorized(token)) appSettingsStore.loadFavorites() else "[]"
+            }
+
+            @JavascriptInterface
+            fun saveFavorites(token: String, favoritesJson: String): Boolean {
+                return isBridgeAuthorized(token) && appSettingsStore.saveFavorites(favoritesJson)
+            }
+
+            @JavascriptInterface
+            fun getHomeUrl(token: String): String {
+                return if (isBridgeAuthorized(token)) appSettingsStore.loadHomeUrl(APP_URL) else ""
+            }
+
+            @JavascriptInterface
+            fun getDefaultHomeUrl(token: String): String {
+                return if (isBridgeAuthorized(token)) APP_URL else ""
+            }
+
+            @JavascriptInterface
+            fun saveHomeUrl(token: String, url: String): Boolean {
+                return isBridgeAuthorized(token) && appSettingsStore.saveHomeUrl(url)
+            }
+
+            @JavascriptInterface
+            fun resetHomeUrl(token: String): Boolean {
+                return isBridgeAuthorized(token) && appSettingsStore.resetHomeUrl()
+            }
+
+            @JavascriptInterface
+            fun exportJson(token: String, fileName: String, json: String): Boolean {
+                if (!isBridgeAuthorized(token) || !isValidExportJson(json)) return false
+                handler.post { startJsonExport(fileName, json) }
+                return true
+            }
+
+            @JavascriptInterface
             fun getImageTapPreviewEnabled(host: String): Boolean {
                 return getSharedPreferences("reader_settings", Context.MODE_PRIVATE)
                     .getBoolean("${normalizeRuleHost(host)}:image_tap_preview", false)
@@ -399,7 +441,56 @@ class MainActivity : AppCompatActivity() {
             swipeRefresh.isEnabled = scrollY == 0
         }
         installElementBlockerAtDocumentStart()
-        webView.loadUrl(APP_URL)
+        webView.loadUrl(appSettingsStore.loadHomeUrl(APP_URL))
+    }
+
+    private fun isBridgeAuthorized(token: String): Boolean = token == bridgeToken
+
+    private fun isValidExportJson(json: String): Boolean {
+        if (json.isBlank() || json.length > 512_000) return false
+        return try {
+            val value = JSONTokener(json).nextValue()
+            value is org.json.JSONObject || value is org.json.JSONArray
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun startJsonExport(fileName: String, json: String) {
+        pendingJsonExport = json
+        val safeName = fileName
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .trim('.', '_')
+            .take(80)
+            .ifBlank { "pakr-settings" }
+            .let { if (it.endsWith(".json", ignoreCase = true)) it else "$it.json" }
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+            putExtra(Intent.EXTRA_TITLE, safeName)
+        }
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(intent, EXPORT_JSON_REQUEST)
+        } catch (_: Exception) {
+            pendingJsonExport = null
+            android.widget.Toast.makeText(this, "无法打开文件保存器", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun finishJsonExport(uri: Uri?) {
+        val json = pendingJsonExport
+        pendingJsonExport = null
+        if (uri == null || json == null) return
+        try {
+            contentResolver.openOutputStream(uri, "wt")?.bufferedWriter(Charsets.UTF_8).use { writer ->
+                requireNotNull(writer) { "output stream unavailable" }
+                writer.write(json)
+            }
+            android.widget.Toast.makeText(this, "JSON 文件已保存", android.widget.Toast.LENGTH_SHORT).show()
+        } catch (_: Exception) {
+            android.widget.Toast.makeText(this, "JSON 文件保存失败", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun showFullscreenCustomView(view: View, callback: WebChromeClient.CustomViewCallback) {
@@ -762,6 +853,7 @@ class MainActivity : AppCompatActivity() {
             elementBlockerScript ?: assets.open("pakr_element_blocker.js")
                 .bufferedReader()
                 .use { it.readText() }
+                .replace("__PAKR_NATIVE_TOKEN__", bridgeToken)
                 .also { elementBlockerScript = it }
         } catch (_: Exception) {
             null
@@ -1119,6 +1211,7 @@ class MainActivity : AppCompatActivity() {
         fileChooserCallbackRef = null
         imagePreviewDialog?.dismiss()
         imagePreviewDialog = null
+        pendingJsonExport = null
         (webView.parent as? android.view.ViewGroup)?.removeView(webView)
         webView.destroy()
         super.onDestroy()
@@ -1130,7 +1223,9 @@ class MainActivity : AppCompatActivity() {
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        if (requestCode == FILE_CHOOSER_REQUEST) {
+        if (requestCode == EXPORT_JSON_REQUEST) {
+            finishJsonExport(if (resultCode == RESULT_OK) data?.data else null)
+        } else if (requestCode == FILE_CHOOSER_REQUEST) {
             val results: Array<Uri>? = if (resultCode == RESULT_OK) {
                 when {
                     (data == null || data.data == null) && cameraImageUri != null -> {
@@ -1177,5 +1272,6 @@ class MainActivity : AppCompatActivity() {
         private const val UA_MODE = "{{UA_MODE}}"
         private const val ANDROID_MOBILE_UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         private const val FILE_CHOOSER_REQUEST = 1001
+        private const val EXPORT_JSON_REQUEST = 1002
     }
 }

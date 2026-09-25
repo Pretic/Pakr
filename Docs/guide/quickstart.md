@@ -27,7 +27,6 @@
 | `KEYSTORE_PASSWORD` | Keystore 密码（gen-keystore 时设置的） |
 | `KEY_ALIAS` | Key 别名（默认 `release`） |
 | `KEY_PASSWORD` | Key 密码（同 Keystore 密码） |
-| `GH_PAT` | GitHub PAT（需要 `repo` + `workflow` 权限） |
 
 ## 第四步：部署到 Cloudflare Pages
 
@@ -40,15 +39,17 @@
    | Build command | （留空） |
    | Build output directory | `/`（根目录） |
 
-3. **Settings** → **Environment variables** 添加：
+3. **Settings** → **Variables and Secrets** 添加：
 
-   | 变量名 | 值 |
-   |--------|----|
-   | `GITHUB_OWNER` | 你的 GitHub 用户名 |
-   | `GITHUB_REPO` | `Pakr` |
-   | `GH_PAT` | 你的 GitHub PAT |
+   | 名称 | 类型 | 值 |
+   |------|------|----|
+   | `GITHUB_OWNER` | 文本变量 | 你的 GitHub 用户名 |
+   | `GITHUB_REPO` | 文本变量 | `Pakr` |
+   | `GH_PAT` | 加密 Secret | 仅授权当前仓库、拥有 **Actions: Read and write** 权限的 fine-grained PAT |
 
-4. 点击 **Save and Deploy**，等待部署完成。
+4. 保存变量后重新部署一次，等待部署完成。
+
+> `GH_PAT` 是 Pages Function 调用 GitHub API 使用的凭据，应保存在 Cloudflare，而不是仓库的 Actions Secrets。若页面提示 `Bad credentials`，请重新生成 PAT、更新该 Secret 并重新部署。
 
 ## 第五步：验证
 

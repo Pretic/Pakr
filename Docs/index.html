@@ -426,7 +426,7 @@ tr:hover td{background:var(--surface)}
     <div class="arch-flow">
       <div class="arch-flow-item"><div class="arch-flow-num">1</div><div class="arch-flow-text">用户在 <strong>Pages 前端</strong>填写表单，点击「开始打包」</div></div>
       <div class="arch-flow-item"><div class="arch-flow-num">2</div><div class="arch-flow-text"><strong>Pages</strong> 向 <strong>Worker</strong>（<code>/api/build</code>）发送 POST 请求，携带表单数据</div></div>
-      <div class="arch-flow-item"><div class="arch-flow-num">3</div><div class="arch-flow-text"><strong>Worker</strong> 验证参数，用 <code>GH_TOKEN</code> 调用 GitHub API 触发 <code>build-apk</code> 工作流，返回 <code>run_id</code></div></div>
+      <div class="arch-flow-item"><div class="arch-flow-num">3</div><div class="arch-flow-text"><strong>Worker</strong> 验证参数，用 <code>GH_PAT</code> 调用 GitHub API 触发 <code>build-apk</code> 工作流，返回 <code>run_id</code></div></div>
       <div class="arch-flow-item"><div class="arch-flow-num">4</div><div class="arch-flow-text"><strong>Pages 前端</strong>轮询 <code>/api/status?run_id=…</code>，Worker 代理查询 Actions 运行状态</div></div>
       <div class="arch-flow-item"><div class="arch-flow-num">5</div><div class="arch-flow-text"><strong>Actions</strong> 编译完成，将 APK 上传至 GitHub Release</div></div>
       <div class="arch-flow-item"><div class="arch-flow-num">6</div><div class="arch-flow-text"><strong>Pages 前端</strong>收到 <code>completed</code> 状态，展示下载链接</div></div>
@@ -651,14 +651,13 @@ tr:hover td{background:var(--surface)}
       <div class="step-body">
         <div class="step-title">配置 GitHub Secrets</div>
         <div class="step-desc">
-          <p>仓库 → <strong>Settings → Secrets and variables → Actions → New repository secret</strong>，添加 5 个 Secret：</p>
+          <p>仓库 → <strong>Settings → Secrets and variables → Actions → New repository secret</strong>，添加 4 个 Secret：</p>
           <div class="table-wrap"><table>
             <tr><th>名称</th><th>值</th></tr>
             <tr><td><code>KEYSTORE_BASE64</code></td><td>上一步复制的 Base64 字符串</td></tr>
             <tr><td><code>KEYSTORE_PASSWORD</code></td><td>gen-keystore 时设置的密码</td></tr>
             <tr><td><code>KEY_ALIAS</code></td><td><code>release</code></td></tr>
             <tr><td><code>KEY_PASSWORD</code></td><td>同 KEYSTORE_PASSWORD</td></tr>
-            <tr><td><code>GH_PAT</code></td><td>GitHub PAT（需 <code>repo</code> + <code>workflow</code> 权限）</td></tr>
           </table></div>
         </div>
       </div>
@@ -673,12 +672,14 @@ tr:hover td{background:var(--surface)}
     <div class="step">
       <div class="step-left"><div class="step-num">5</div></div>
       <div class="step-body">
-        <div class="step-title">添加 Cloudflare 环境变量</div>
+        <div class="step-title">添加 Cloudflare 变量与 Secret</div>
         <div class="step-desc">
-          <p>Pages 项目 → <strong>Settings → Environment variables → Add variable</strong>：</p>
+          <p>Pages 项目 → <strong>Settings → Variables and Secrets</strong>：</p>
           <div class="table-wrap"><table>
-            <tr><th>变量名</th><th>值</th></tr>
-            <tr><td><code>GH_TOKEN</code></td><td>与 GH_PAT 相同</td></tr>
+            <tr><th>名称</th><th>类型</th><th>值</th></tr>
+            <tr><td><code>GITHUB_OWNER</code></td><td>文本变量</td><td>你的 GitHub 用户名</td></tr>
+            <tr><td><code>GITHUB_REPO</code></td><td>文本变量</td><td><code>Pakr</code></td></tr>
+            <tr><td><code>GH_PAT</code></td><td>加密 Secret</td><td>仅授权当前仓库、具有 <strong>Actions: Read and write</strong> 权限的 fine-grained PAT</td></tr>
           </table></div>
           <div class="callout callout-warn"><div class="icon-warn"></div><p>添加后需在 Deployments 页手动 <strong>Retry deployment</strong> 一次才生效。</p></div>
         </div>
@@ -724,16 +725,15 @@ base64 -i release.jks | tr -d '\n'</code></pre>
 
 <!-- ════════════════ Secrets ════════════════ -->
 <div class="page" id="page-secrets">
-  <h1>配置 GitHub Secrets</h1>
-  <p class="page-subtitle">Secrets 向 Actions 传递敏感信息，不会出现在日志或代码中。</p>
+  <h1>配置签名 Secrets 与 GitHub PAT</h1>
+  <p class="page-subtitle">签名 Secrets 保存在 GitHub Actions；触发工作流的 PAT 保存在 Cloudflare Pages。</p>
 
   <h2>创建 PAT</h2>
-  <p>前往 <a href="https://github.com/settings/tokens/new" target="_blank">GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token</a>。</p>
-  <p>勾选权限：</p>
-  <ul><li><code>repo</code> — 访问仓库</li><li><code>workflow</code> — 触发 Actions</li></ul>
+  <p>前往 <a href="https://github.com/settings/personal-access-tokens/new" target="_blank">GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token</a>。</p>
+  <p>Repository access 只选择 Pakr 仓库，并将 Repository permissions 中的 <strong>Actions</strong> 设置为 <strong>Read and write</strong>。</p>
   <div class="callout callout-warn"><div class="icon-warn"></div><p>Token 只在生成后显示一次，请立即复制保存。</p></div>
 
-  <h2>添加所有 Secrets</h2>
+  <h2>添加签名 Secrets</h2>
   <p>仓库 → <strong>Settings → Secrets and variables → Actions → New repository secret</strong>：</p>
   <div class="table-wrap"><table>
     <tr><th>名称</th><th>说明</th><th>示例值</th></tr>
@@ -741,8 +741,8 @@ base64 -i release.jks | tr -d '\n'</code></pre>
     <tr><td><code>KEYSTORE_PASSWORD</code></td><td>Keystore 密码</td><td><code>myPassword123</code></td></tr>
     <tr><td><code>KEY_ALIAS</code></td><td>Key 别名</td><td><code>release</code></td></tr>
     <tr><td><code>KEY_PASSWORD</code></td><td>Key 密码（同 Keystore 密码）</td><td><code>myPassword123</code></td></tr>
-    <tr><td><code>GH_PAT</code></td><td>Personal Access Token</td><td><code>ghp_xxxxxxxxxxxx</code></td></tr>
   </table></div>
+  <p>PAT 不要放入 GitHub Actions Secrets；请在 Cloudflare Pages 中以 <code>GH_PAT</code> 加密 Secret 保存。</p>
 
   <div class="pager">
     <a class="pager-btn" href="#" onclick="goPage('keystore');return false"><div class="pager-label">上一页</div><div class="pager-name">← 配置签名</div></a>
@@ -777,12 +777,14 @@ base64 -i release.jks | tr -d '\n'</code></pre>
     </div>
     <div class="step">
       <div class="step-left"><div class="step-num">3</div><div class="step-line"></div></div>
-      <div class="step-body"><div class="step-title">添加环境变量</div>
+      <div class="step-body"><div class="step-title">添加变量与 Secret</div>
         <div class="step-desc">
-          <p>部署完成 → <strong>Settings → Environment variables → Add variable</strong>：</p>
+          <p>部署完成 → <strong>Settings → Variables and Secrets</strong>：</p>
           <div class="table-wrap"><table>
-            <tr><th>变量名</th><th>值</th></tr>
-            <tr><td><code>GH_TOKEN</code></td><td>与 GH_PAT 相同</td></tr>
+            <tr><th>名称</th><th>类型</th><th>值</th></tr>
+            <tr><td><code>GITHUB_OWNER</code></td><td>文本变量</td><td>你的 GitHub 用户名</td></tr>
+            <tr><td><code>GITHUB_REPO</code></td><td>文本变量</td><td><code>Pakr</code></td></tr>
+            <tr><td><code>GH_PAT</code></td><td>加密 Secret</td><td>上一步创建的 fine-grained PAT</td></tr>
           </table></div>
           <div class="callout callout-warn"><div class="icon-warn"></div><p>添加后需在 <strong>Deployments</strong> 手动触发 <strong>Retry deployment</strong> 才生效。</p></div>
         </div>
@@ -909,7 +911,7 @@ base64 -i release.jks | tr -d '\n'</code></pre>
 
   <div class="faq-item" onclick="toggleFaq(this)">
     <div class="faq-q">打包失败怎么排查？<span class="faq-arrow"></span></div>
-    <div class="faq-a"><p>进入 Fork 仓库 → <strong>Actions</strong>，找到对应运行记录查看详细日志。常见原因：</p><ul><li><code>GH_PAT</code> 权限不足，需 <code>repo</code> + <code>workflow</code></li><li>Keystore Secrets 缺失或填写错误</li><li>目标网址不可访问（防火墙或需登录）</li><li>包名格式错误（需反向域名格式）</li></ul></div>
+    <div class="faq-a"><p>若页面显示 <code>Bad credentials</code> 或 HTTP 401，请先更新 Cloudflare 中的 <code>GH_PAT</code> Secret，并重新部署。PAT 应仅授权当前仓库且拥有 <strong>Actions: Read and write</strong> 权限。若任务已经进入 Actions，再打开对应运行记录查看详细日志。其他常见原因包括 Keystore Secrets 缺失、目标网址不可访问或包名格式错误。</p></div>
   </div>
   <div class="faq-item" onclick="toggleFaq(this)">
     <div class="faq-q">安装后无法升级覆盖？<span class="faq-arrow"></span></div>

@@ -5,13 +5,17 @@
 进入你 Fork 的仓库 → **Actions**，找到对应的 workflow 运行记录，查看详细日志定位错误。
 
 常见原因：
-- `GH_PAT` 权限不足，需要 `repo` + `workflow` 两个权限
+- `GH_PAT` 无效、已过期或权限不足。Fine-grained PAT 需授权当前仓库并开启 **Actions: Read and write**
 - Keystore Secrets 配置错误或未配置
 - 目标网址无法访问
+
+若页面直接显示 `Bad credentials`，失败发生在 Cloudflare 触发 GitHub Actions 这一步，尚未开始 Gradle 编译。请在 Cloudflare Pages 的 Production Variables and Secrets 中更新令牌并重新部署。
 
 ## APK 安装后无法升级覆盖？
 
 说明两次打包使用了不同的签名。需要正确配置 Keystore Secrets（`KEYSTORE_BASE64`、`KEYSTORE_PASSWORD`、`KEY_ALIAS`、`KEY_PASSWORD`），确保每次签名一致。
+
+同时需要保持包名完全一致。若只是网站域名变化，不必更换包名：在 App 网页中长按或右键 → **设置** → **首页网址**，保存新域名即可；该设置会在同包升级后保留。
 
 ## 打包历史丢了？
 

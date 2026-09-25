@@ -239,6 +239,8 @@ async function handleBuild(request, env) {
   const resolvedIconColor = /^#?[0-9a-f]{6}$/i.test(icon_color || '') ? icon_color : '#BF3EFF';
   const allowedUaModes = new Set(['auto', 'android', 'iphone', 'harmonyos', 'android_pad', 'ipad']);
   const resolvedUaMode = allowedUaModes.has(ua_mode) ? ua_mode : 'auto';
+  const configIssue = githubConfigIssue(env);
+  if (configIssue) return json({ error: configIssue, code: 'github_config_missing' }, 500);
 
   const r = await gh(env,
     `/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/build.yml/dispatches`,
@@ -260,10 +262,21 @@ async function handleBuild(request, env) {
         }
     })}
   );
-  if (r.status !== 204) return json({ error: 'Trigger failed', detail: await r.text() }, 500);
+  if (!r.ok) return githubErrorResponse(r, '触发构建');
+
+  let dispatch = null;
+  if (r.status !== 204) {
+    try { dispatch = await r.json(); } catch (_) {}
+  }
 
   // 立即返回，避免在 Worker 请求链路中等待 run_id 导致前端卡住
-  return json({ status: 'queued', build_id: buildId, dispatched_at: new Date().toISOString() });
+  return json({
+    status: 'queued',
+    build_id: buildId,
+    run_id: dispatch?.workflow_run_id || null,
+    run_url: dispatch?.html_url || '',
+    dispatched_at: new Date().toISOString()
+  });
 }
 
 async function handleStatus(request, env) {
@@ -598,6 +611,8 @@ function syncUpstreamBranch(env) {
 async function handleSyncTrigger(request, env, mode) {
   const denied = await requireSyncAdmin(request, env);
   if (denied) return denied;
+  const configIssue = githubConfigIssue(env);
+  if (configIssue) return json({ error: configIssue, code: 'github_config_missing' }, 500);
 
   const syncId = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
   const upstreamRepo = syncUpstreamRepo();
@@ -614,12 +629,19 @@ async function handleSyncTrigger(request, env, mode) {
         }
     })}
   );
-  if (r.status !== 204) return json({ error: 'Sync trigger failed', detail: await r.text() }, 500);
+  if (!r.ok) return githubErrorResponse(r, '触发上游同步');
+
+  let dispatch = null;
+  if (r.status !== 204) {
+    try { dispatch = await r.json(); } catch (_) {}
+  }
 
   return json({
     status: 'queued',
     mode,
     sync_id: syncId,
+    run_id: dispatch?.workflow_run_id || null,
+    run_url: dispatch?.html_url || '',
     upstream_repo: upstreamRepo,
     upstream_branch: upstreamBranch,
     dispatched_at: new Date().toISOString(),
@@ -738,19 +760,65 @@ function parseSyncLogInfo(raw) {
 }
 
 function gh(env, path, opts = {}) {
-  const token = env.GITHUB_TOKEN || env.GH_PAT;
+  // GH_PAT is the documented Pages secret. Keep GITHUB_TOKEN as a legacy alias,
+  // but never let a stale legacy value shadow a freshly rotated GH_PAT.
+  const token = env.GH_PAT || env.GITHUB_TOKEN;
   if (!token) throw new Error('Missing GitHub token: set GITHUB_TOKEN or GH_PAT');
   return fetch(`https://api.github.com${path}`, {
     ...opts,
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
+      'X-GitHub-Api-Version': '2026-03-10',
       'User-Agent': 'APK-Builder-CF-Worker/1.0',
       'Content-Type': 'application/json',
       ...(opts.headers || {}),
     }
   });
+}
+
+function githubConfigIssue(env) {
+  if (!(env.GITHUB_TOKEN || env.GH_PAT)) {
+    return '未配置 GitHub 令牌，请在 Cloudflare Pages 中设置加密变量 GH_PAT 或 GITHUB_TOKEN';
+  }
+  if (!String(env.GITHUB_OWNER || '').trim() || !String(env.GITHUB_REPO || '').trim()) {
+    return 'GitHub 仓库配置不完整，请检查 GITHUB_OWNER 和 GITHUB_REPO';
+  }
+  return '';
+}
+
+async function githubErrorResponse(response, action) {
+  let raw = '';
+  let detail = '';
+  try {
+    raw = await response.text();
+    const parsed = JSON.parse(raw);
+    detail = String(parsed.message || '').trim();
+  } catch (_) {
+    detail = String(raw || '').trim();
+  }
+  if (detail.length > 500) detail = detail.slice(0, 500);
+
+  const messages = {
+    401: 'GitHub 令牌无效或已过期，请在 Cloudflare Pages 更新 GH_PAT 或 GITHUB_TOKEN',
+    403: 'GitHub 令牌没有触发 Actions 的权限；细粒度令牌需要本仓库 Actions：读写权限',
+    404: 'GitHub 找不到仓库或工作流，请检查令牌的仓库访问范围、GITHUB_OWNER 和 GITHUB_REPO',
+    422: 'GitHub 拒绝了工作流参数，请确认 main 分支和 build.yml 的 workflow_dispatch 配置',
+    429: 'GitHub API 请求过于频繁，请稍后重试'
+  };
+  const codes = {
+    401: 'github_auth_invalid',
+    403: 'github_permission_denied',
+    404: 'github_workflow_not_found',
+    422: 'github_dispatch_invalid',
+    429: 'github_rate_limited'
+  };
+  return json({
+    error: messages[response.status] || `${action}失败（GitHub HTTP ${response.status}）`,
+    code: codes[response.status] || 'github_request_failed',
+    github_status: response.status,
+    detail
+  }, 502);
 }
 
 function json(d, s = 200) { return new Response(JSON.stringify(d), { status: s, headers: { 'Content-Type': 'application/json' } }); }

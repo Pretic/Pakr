@@ -134,10 +134,12 @@ function createFixture(runScript = true) {
   const document = new FakeDocument();
   const timerQueue = new Map();
   let nextTimerId = 1;
+  let savedFavorites = "[]";
 
   const context = {
     document,
     location: { hostname: "example.com", href: "https://example.com/page" },
+    URL,
     innerWidth: 800,
     innerHeight: 600,
     CSS: { escape: (value) => String(value).replace(/[^a-zA-Z0-9_-]/g, "_") },
@@ -153,6 +155,16 @@ function createFixture(runScript = true) {
     PakrElementBlocker: {
       getRules: () => "[]",
       saveRules: () => {},
+      getFavorites: () => savedFavorites,
+      saveFavorites: (_token, json) => {
+        savedFavorites = json;
+        return true;
+      },
+      getHomeUrl: () => "https://example.com/",
+      getDefaultHomeUrl: () => "https://example.com/",
+      saveHomeUrl: () => true,
+      resetHomeUrl: () => true,
+      exportJson: () => true,
       getFontScale: () => "normal",
       applyFontScale: () => {},
       toast: () => {},
@@ -184,6 +196,19 @@ function createFixture(runScript = true) {
     menuButtonCount() {
       const menu = document.walk().find((element) => element.className === "pakr-blocker-menu");
       return menu ? menu.children.filter((element) => element.tagName === "BUTTON").length : 0;
+    },
+    menuButtonLabels() {
+      const menu = document.walk().find((element) => element.className === "pakr-blocker-menu");
+      return menu ? menu.children.filter((element) => element.tagName === "BUTTON").map((element) => element.textContent) : [];
+    },
+    clickMenuButton(label) {
+      const menu = document.walk().find((element) => element.className === "pakr-blocker-menu");
+      const button = menu && menu.children.find((element) => element.tagName === "BUTTON" && element.textContent === label);
+      assert.ok(button, `menu button ${label} should exist`);
+      for (const listener of button.eventListeners.get("click") || []) listener({ stopPropagation() {} });
+    },
+    savedFavorites() {
+      return JSON.parse(savedFavorites);
     }
   };
 }
@@ -239,6 +264,30 @@ test("native entry can open the menu at WebView coordinates", () => {
   assert.equal(fixture.context.window.PakrElementBlockerUI.openMenuAt(120, 180), true);
 
   assert.equal(fixture.menuCount(), 1);
+});
+
+test("context menu exposes favorites and a consolidated settings screen", () => {
+  const fixture = createFixture();
+  fixture.context.window.PakrElementBlockerUI.openMenuAt(120, 180);
+
+  assert.ok(fixture.menuButtonLabels().includes("收藏当前网页"));
+  assert.ok(fixture.menuButtonLabels().includes("设置"));
+  assert.ok(!fixture.menuButtonLabels().includes("已屏蔽列表"));
+
+  fixture.clickMenuButton("设置");
+  const titles = fixture.document.walk()
+    .filter((element) => element.className === "pakr-blocker-settings-title")
+    .map((element) => element.textContent);
+  assert.deepEqual(titles, ["首页网址", "网页收藏", "已屏蔽列表", "网页字号", "图片点击预览"]);
+});
+
+test("favorite action persists the current page through the native bridge", () => {
+  const fixture = createFixture();
+  fixture.context.window.PakrElementBlockerUI.openMenuAt(120, 180);
+  fixture.clickMenuButton("收藏当前网页");
+
+  assert.equal(fixture.savedFavorites().length, 1);
+  assert.equal(fixture.savedFavorites()[0].url, "https://example.com/page");
 });
 
 test("late native bridge can initialize after an earlier bridge-free attempt", () => {

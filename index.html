@@ -45,6 +45,14 @@ nav{
   content:'';position:absolute;right:7px;top:7px;width:7px;height:7px;border-radius:50%;
   background:#ef4444;box-shadow:0 0 0 2px var(--surface,#fff);
 }
+@media(max-width:480px){
+  nav{padding:0 12px}
+  .nav-actions{gap:6px}
+  .nav-tool{width:36px;height:36px}
+  .nav-actions>a.nav-tool{display:none}
+  .content{padding-left:16px!important;padding-right:16px!important}
+  .card{padding:20px}
+}
 
 /* ── Hero ── */
 .hero{
@@ -104,6 +112,13 @@ label{font-size:12px;font-weight:500;color:#444}
   color:var(--label-strong,#333);
 }
 .hint{font-size:11px;color:#999;margin-top:2px}
+.pkg-input-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+.pkg-input-row input{min-width:0;width:100%}
+.pkg-regenerate{
+  height:42px;border:1px solid #e0e0e0;border-radius:8px;padding:0 12px;
+  color:#555;background:#fff;font:600 12px/1 inherit;cursor:pointer;white-space:nowrap;
+}
+.pkg-regenerate:hover{border-color:#bbb;color:#111;background:#f7f7f7}
 input,select{
   height:42px;
   border:1px solid #e0e0e0;border-radius:8px;
@@ -563,6 +578,8 @@ input::placeholder{color:var(--faint)}
 .step-item{border-bottom-color:var(--border2)}
 .step-text{color:var(--muted)}
 .hint{color:var(--faint)}
+.pkg-regenerate{background:var(--surface);border-color:var(--input-border);color:var(--muted)}
+.pkg-regenerate:hover{background:var(--surface2);border-color:var(--border);color:var(--text)}
 .hero-tag{background:var(--surface);border-color:var(--border)}
 .hero h1{color:var(--text)}
 .hero p{color:var(--muted)}
@@ -732,7 +749,11 @@ footer{border-top-color:var(--border);color:var(--faint)}
         </div>
         <div class="field">
           <label for="f_pkg">包名</label>
-          <input type="text" id="f_pkg" placeholder="com.example.myapp" required>
+          <div class="pkg-input-row">
+            <input type="text" id="f_pkg" placeholder="com.example.myapp" required spellcheck="false" autocomplete="off">
+            <button class="pkg-regenerate" id="pkgRegenerateBtn" type="button">重新生成</button>
+          </div>
+          <div class="hint" id="pkgModeHint">根据网址自动生成，也可以直接手动修改。</div>
         </div>
         <div class="field">
             <label for="f_ver">版本号</label>
@@ -944,26 +965,52 @@ function setupAutoPackageName(){
   const urlInput = document.getElementById('f_url');
   const nameInput = document.getElementById('f_name');
   const pkgInput = document.getElementById('f_pkg');
+  const regenerateBtn = document.getElementById('pkgRegenerateBtn');
+  const modeHint = document.getElementById('pkgModeHint');
   if(!urlInput || !nameInput || !pkgInput) return;
 
-  let pkgTouched = !!pkgInput.value.trim();
+  let writingGenerated = false;
+  let lastGenerated = generatePackageName(urlInput.value.trim(), nameInput.value.trim());
+  const savedMode = pkgInput.dataset.manual;
+  let pkgTouched = savedMode === 'true' || (
+    savedMode !== 'false' && !!pkgInput.value.trim() && !!lastGenerated && pkgInput.value.trim() !== lastGenerated
+  );
+
+  function setMode(manual){
+    pkgTouched = !!manual;
+    pkgInput.dataset.manual = pkgTouched ? 'true' : 'false';
+    if(modeHint){
+      modeHint.textContent = pkgTouched
+        ? '当前为手动包名，网址和名称变化时不会覆盖。'
+        : '当前为自动包名，也可以直接手动修改。';
+    }
+  }
+
+  setMode(pkgTouched);
   pkgInput.addEventListener('input', () => {
-    pkgTouched = !!pkgInput.value.trim();
+    if(writingGenerated) return;
+    setMode(!!pkgInput.value.trim());
+    saveForm();
   });
 
   function fillPkg(force=false){
     const next = generatePackageName(urlInput.value.trim(), nameInput.value.trim());
     if(!next) return;
-    if(force || !pkgTouched || !pkgInput.value.trim()){
+    if(force || !pkgTouched || !pkgInput.value.trim() || pkgInput.value.trim() === lastGenerated){
+      writingGenerated = true;
       pkgInput.value = next;
+      lastGenerated = next;
+      setMode(false);
       pkgInput.dispatchEvent(new Event('input', { bubbles:true }));
-      pkgTouched = false;
+      writingGenerated = false;
+      saveForm();
     }
   }
 
   urlInput.addEventListener('input', () => fillPkg(false));
   urlInput.addEventListener('blur', () => fillPkg(false));
   nameInput.addEventListener('input', () => fillPkg(false));
+  if(regenerateBtn) regenerateBtn.addEventListener('click', () => fillPkg(true));
   fillPkg(false);
 }
 
@@ -1362,8 +1409,15 @@ async function handleBuildClick(){
       signal: ctl.signal,
     });
     clearTimeout(buildTimeout);
-    const json = await res.json();
-    if(!res.ok) throw new Error(json.error || '触发失败');
+    const raw = await res.text();
+    let json = {};
+    try { json = raw ? JSON.parse(raw) : {}; } catch(_){ json = { error: raw || '触发失败' }; }
+    if(!res.ok){
+      const failure = new Error(json.error || ('触发失败（HTTP ' + res.status + '）'));
+      failure.detail = json.detail || '';
+      failure.code = json.code || '';
+      throw failure;
+    }
 
     setStep(1,'done'); setStep(2,'active'); setProgress(18);
     setTitle('排队中','等待 GitHub Actions 启动…');
@@ -1376,7 +1430,9 @@ async function handleBuildClick(){
         ? '网络连接失败，请检查网络后重试'
         : err.message);
     showErr(msg);
-    setManualLog(['触发构建失败：' + msg], true);
+    const failureLines = ['触发构建失败：' + msg];
+    if(err && err.detail && err.detail !== msg) failureLines.push('GitHub 返回：' + err.detail);
+    setManualLog(failureLines, true);
   } finally {
     setBusy(false);
   }
@@ -1667,6 +1723,7 @@ function saveForm(){
   const saved = {};
   SAVE_KEYS.forEach(id => { saved[id] = document.getElementById(id).value; });
   SAVE_CHECK_KEYS.forEach(id => { saved[id] = document.getElementById(id).checked; });
+  saved.pkg_manual = document.getElementById('f_pkg').dataset.manual === 'true';
   saved.icon_mode = getIconMode();
   saved.ua_mode = getUaMode();
   localStorage.setItem('apkbuilder_form', JSON.stringify(saved));
@@ -1687,6 +1744,9 @@ function loadForm(){
     if(saved.ua_mode){
       const mode = document.getElementById('f_ua_mode');
       if(mode) mode.value = saved.ua_mode;
+    }
+    if(Object.prototype.hasOwnProperty.call(saved, 'pkg_manual')){
+      document.getElementById('f_pkg').dataset.manual = saved.pkg_manual ? 'true' : 'false';
     }
   } catch(e){}
 }
@@ -1901,6 +1961,8 @@ function renderHistory(){
       document.getElementById('f_url').value  = item.app_url;
       document.getElementById('f_name').value = item.app_name;
       document.getElementById('f_pkg').value  = item.package_name;
+      document.getElementById('f_pkg').dataset.manual = 'true';
+      document.getElementById('f_pkg').dispatchEvent(new Event('input', { bubbles:true }));
       const _vp = (item.version_name||'1.0.0').split('.');
       _vp[_vp.length-1] = String((parseInt(_vp[_vp.length-1])||0)+1);
       document.getElementById('f_ver').value = _vp.join('.');

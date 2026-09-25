@@ -18,7 +18,7 @@ test('native rules are acknowledged, validated and never truncated', () => {
 test('early injection is feature gated and resumed pages are refreshed', () => {
   assert.match(main, /isFeatureSupported\(WebViewFeature\.DOCUMENT_START_SCRIPT\)/);
   assert.match(main, /addDocumentStartJavaScript/);
-  assert.ok(main.indexOf('installElementBlockerAtDocumentStart()') < main.indexOf('webView.loadUrl(APP_URL)'));
+  assert.ok(main.indexOf('installElementBlockerAtDocumentStart()') < main.indexOf('webView.loadUrl(appSettingsStore.loadHomeUrl(APP_URL))'));
   assert.match(main, /override fun onResume\(\)[\s\S]*injectElementBlocker\(webView\)/);
 });
 

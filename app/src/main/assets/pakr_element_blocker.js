@@ -3,6 +3,7 @@
   if (window.top && window.top !== window) return;
   var bridge = window.PakrElementBlocker;
   if (!bridge) return;
+  var nativeToken = "__PAKR_NATIVE_TOKEN__";
   if (window.__pakrElementBlockerReady) {
     if (window.PakrElementBlockerUI && window.PakrElementBlockerUI.refresh) {
       window.PakrElementBlockerUI.refresh();
@@ -14,12 +15,16 @@
   var rules = [];
   var savedRulesJson = "[]";
   var rulesLoadIssue = "";
+  var favorites = [];
+  var savedFavoritesJson = "[]";
+  var favoritesLoadIssue = "";
   var compiledHideCss = "";
   var repairTimer = null;
   var imageTapPreviewEnabled = false;
   var imageGesture = null;
   var maxRules = 200;
   var maxRuleJsonLength = 512000;
+  var maxFavorites = 200;
   var lastTarget = null;
   var touchTimer = null;
   var touchStartX = 0;
@@ -88,6 +93,90 @@
       showToast(error && error.message ? error.message : "规则保存失败");
       return false;
     }
+  }
+
+  function normalizeFavoriteUrl(raw) {
+    try {
+      var url = new URL(String(raw || "").trim(), location.href);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+      if (!url.hostname) return "";
+      url.hash = "";
+      return url.href.slice(0, 8000);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function normalizeFavorite(item) {
+    if (!item || typeof item !== "object") return null;
+    var url = normalizeFavoriteUrl(item.url);
+    if (!url) return null;
+    var title = String(item.title || "未命名网页").replace(/\s+/g, " ").trim().slice(0, 200);
+    return {
+      title: title || "未命名网页",
+      url: url,
+      createdAt: Number(item.createdAt) || Date.now(),
+      updatedAt: Number(item.updatedAt) || Number(item.createdAt) || Date.now()
+    };
+  }
+
+  function loadFavorites() {
+    try {
+      if (!bridge.getFavorites) throw new Error("当前版本不支持收藏");
+      var raw = bridge.getFavorites(nativeToken) || "[]";
+      var parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error("invalid favorites");
+      favorites = parsed.map(normalizeFavorite).filter(Boolean).slice(0, maxFavorites);
+      favoritesLoadIssue = favorites.length === parsed.length ? "" : "部分旧收藏无效，已忽略。";
+      savedFavoritesJson = JSON.stringify(favorites);
+    } catch (error) {
+      favoritesLoadIssue = error && error.message ? error.message : "收藏数据无法读取";
+      try { favorites = JSON.parse(savedFavoritesJson); } catch (_) { favorites = []; }
+    }
+  }
+
+  function saveFavorites() {
+    try {
+      if (favorites.length > maxFavorites) throw new Error("最多保存 200 个收藏");
+      var raw = JSON.stringify(favorites);
+      if (!bridge.saveFavorites || bridge.saveFavorites(nativeToken, raw) === false) {
+        throw new Error("收藏保存失败，原收藏未更改");
+      }
+      savedFavoritesJson = raw;
+      favoritesLoadIssue = "";
+      return true;
+    } catch (error) {
+      try { favorites = JSON.parse(savedFavoritesJson); } catch (_) { favorites = []; }
+      showToast(error && error.message ? error.message : "收藏保存失败");
+      return false;
+    }
+  }
+
+  function currentPageFavorite() {
+    var url = normalizeFavoriteUrl(location.href);
+    return {
+      title: String(document.title || host || "未命名网页").replace(/\s+/g, " ").trim().slice(0, 200) || "未命名网页",
+      url: url,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+  }
+
+  function addCurrentFavorite() {
+    var favorite = currentPageFavorite();
+    if (!favorite.url) {
+      showToast("当前页面不能收藏");
+      return;
+    }
+    var existing = favorites.findIndex(function (item) { return item.url === favorite.url; });
+    if (existing >= 0) {
+      favorite.createdAt = favorites[existing].createdAt || Date.now();
+      favorites.splice(existing, 1);
+    }
+    favorites.unshift(favorite);
+    if (!saveFavorites()) return;
+    removeUi();
+    showToast(existing >= 0 ? "已更新收藏" : "已收藏当前网页");
   }
 
   function loadImageTapPreference() {
@@ -553,10 +642,29 @@
   }
 
   function showExportPanel() {
+    var payload = exportedRulePayload();
     var textarea = document.createElement("textarea");
     textarea.className = uiPrefix + "textarea";
-    textarea.value = exportedRulePayload();
+    textarea.value = payload;
     textarea.readOnly = true;
+
+    var row = document.createElement("div");
+    row.className = uiPrefix + "action-row";
+
+    var save = document.createElement("button");
+    save.className = uiPrefix + "primary";
+    save.textContent = "保存 JSON 文件";
+    save.addEventListener("click", function () {
+      try {
+        var fileName = "pakr-blocked-" + host.replace(/[^a-z0-9._-]/gi, "_") + ".json";
+        if (!bridge.exportJson || bridge.exportJson(nativeToken, fileName, payload) === false) {
+          throw new Error("export unavailable");
+        }
+        showToast("请选择 JSON 文件保存位置");
+      } catch (_) {
+        showToast("当前版本无法直接保存，请使用复制规则");
+      }
+    });
 
     var copy = document.createElement("button");
     copy.className = uiPrefix + "primary";
@@ -567,10 +675,9 @@
       copyText(textarea.value, "已复制规则");
     });
 
-    var actions = [textarea, copy];
-    showPanel("导出规则", "复制下面内容，可在另一个 App 的同域名页面导入。", actions);
-    textarea.focus();
-    textarea.select();
+    row.appendChild(save);
+    row.appendChild(copy);
+    showPanel("导出屏蔽规则", "可保存为本地 JSON 文件，也可复制后在另一个同域名页面导入。", [textarea, row]);
   }
 
   function showImportPanel() {
@@ -881,6 +988,191 @@
     showPanel("调整字号", "当前域名：" + host + "\nA- 缩小 · A 恢复默认 · A+ 放大", actions);
   }
 
+  function makeActionButton(label, action, className) {
+    var button = document.createElement("button");
+    button.textContent = label;
+    if (className) button.className = className;
+    button.addEventListener("click", action);
+    return button;
+  }
+
+  function makeSettingsItem(title, description, action) {
+    var button = document.createElement("button");
+    button.className = uiPrefix + "settings-item";
+    var titleEl = document.createElement("span");
+    titleEl.className = uiPrefix + "settings-title";
+    titleEl.textContent = title;
+    var descriptionEl = document.createElement("span");
+    descriptionEl.className = uiPrefix + "settings-desc";
+    descriptionEl.textContent = description;
+    button.appendChild(titleEl);
+    button.appendChild(descriptionEl);
+    button.addEventListener("click", action);
+    return button;
+  }
+
+  function makeSettingsInput(value, placeholder) {
+    var input = document.createElement("input");
+    input.className = uiPrefix + "settings-input";
+    input.value = value || "";
+    input.placeholder = placeholder || "";
+    return input;
+  }
+
+  function showFavoriteEditor(index) {
+    var original = index >= 0 && favorites[index] ? favorites[index] : currentPageFavorite();
+    var titleInput = makeSettingsInput(original.title, "收藏名称");
+    var urlInput = makeSettingsInput(original.url, "https://example.com/page");
+    urlInput.type = "url";
+
+    var row = document.createElement("div");
+    row.className = uiPrefix + "action-row";
+    row.appendChild(makeActionButton("保存", function () {
+      var url = normalizeFavoriteUrl(urlInput.value);
+      if (!url) {
+        showToast("请输入有效的 HTTP/HTTPS 网址");
+        return;
+      }
+      var next = normalizeFavorite({
+        title: titleInput.value,
+        url: url,
+        createdAt: original.createdAt,
+        updatedAt: Date.now()
+      });
+      var updated = favorites.filter(function (item, itemIndex) {
+        return itemIndex !== index && item.url !== url;
+      });
+      var insertAt = index >= 0 ? Math.min(index, updated.length) : 0;
+      updated.splice(insertAt, 0, next);
+      favorites = updated;
+      if (saveFavorites()) showFavoritesPanel();
+    }, uiPrefix + "primary"));
+    row.appendChild(makeActionButton("取消", showFavoritesPanel));
+
+    var fields = document.createElement("div");
+    fields.className = uiPrefix + "settings-fields";
+    fields.appendChild(titleInput);
+    fields.appendChild(urlInput);
+    showPanel(index >= 0 ? "编辑收藏" : "新增收藏", "名称和网址都只保存在本机。", [fields, row]);
+  }
+
+  function showFavoritesPanel() {
+    loadFavorites();
+    var actions = [];
+    var addRow = document.createElement("div");
+    addRow.className = uiPrefix + "action-row";
+    addRow.appendChild(makeActionButton("收藏当前网页", addCurrentFavorite, uiPrefix + "primary"));
+    addRow.appendChild(makeActionButton("手动添加", function () { showFavoriteEditor(-1); }));
+    actions.push(addRow);
+
+    if (favorites.length) {
+      var list = document.createElement("div");
+      list.className = uiPrefix + "favorite-list";
+      favorites.forEach(function (favorite, index) {
+        var row = document.createElement("div");
+        row.className = uiPrefix + "favorite-row";
+        var info = document.createElement("div");
+        info.className = uiPrefix + "favorite-info";
+        var title = document.createElement("div");
+        title.className = uiPrefix + "favorite-title";
+        title.textContent = favorite.title;
+        var url = document.createElement("div");
+        url.className = uiPrefix + "favorite-url";
+        url.textContent = favorite.url;
+        info.appendChild(title);
+        info.appendChild(url);
+
+        var buttons = document.createElement("div");
+        buttons.className = uiPrefix + "favorite-actions";
+        buttons.appendChild(makeActionButton("打开", function () {
+          removeUi();
+          location.assign(favorite.url);
+        }));
+        buttons.appendChild(makeActionButton("编辑", function () { showFavoriteEditor(index); }));
+        buttons.appendChild(makeActionButton("删除", function () {
+          favorites.splice(index, 1);
+          if (saveFavorites()) showFavoritesPanel();
+        }, uiPrefix + "danger-action"));
+
+        row.appendChild(info);
+        row.appendChild(buttons);
+        list.appendChild(row);
+      });
+      actions.push(list);
+    }
+
+    var body = favorites.length
+      ? "共 " + favorites.length + " 个收藏。打开、编辑和删除都在这里管理。"
+      : (favoritesLoadIssue || "还没有收藏网页。可在任意页面长按后收藏当前网页。");
+    showPanel("网页收藏", body, actions);
+  }
+
+  function readNativeUrl(methodName, fallback) {
+    try {
+      return normalizeFavoriteUrl(bridge[methodName] && bridge[methodName](nativeToken)) || fallback || "";
+    } catch (_) {
+      return fallback || "";
+    }
+  }
+
+  function showHomeUrlPanel() {
+    var defaultUrl = readNativeUrl("getDefaultHomeUrl", normalizeFavoriteUrl(location.href));
+    var currentUrl = readNativeUrl("getHomeUrl", defaultUrl);
+    var input = makeSettingsInput(currentUrl, "https://new-domain.example");
+    input.type = "url";
+
+    function saveHome(openNow) {
+      var url = normalizeFavoriteUrl(input.value);
+      if (!url) {
+        showToast("请输入有效的 HTTP/HTTPS 网址");
+        return;
+      }
+      try {
+        if (!bridge.saveHomeUrl || bridge.saveHomeUrl(nativeToken, url) === false) throw new Error("save failed");
+      } catch (_) {
+        showToast("首页网址保存失败");
+        return;
+      }
+      showToast(openNow ? "首页网址已更新，正在打开" : "首页网址已更新");
+      if (openNow) {
+        removeUi();
+        location.assign(url);
+      }
+    }
+
+    var row = document.createElement("div");
+    row.className = uiPrefix + "action-row";
+    row.appendChild(makeActionButton("保存", function () { saveHome(false); }, uiPrefix + "primary"));
+    row.appendChild(makeActionButton("保存并打开", function () { saveHome(true); }, uiPrefix + "primary"));
+
+    var reset = makeActionButton("恢复打包时的网址", function () {
+      try {
+        if (!bridge.resetHomeUrl || bridge.resetHomeUrl(nativeToken) === false) throw new Error("reset failed");
+        input.value = defaultUrl;
+        showToast("已恢复打包时的网址");
+      } catch (_) {
+        showToast("恢复默认网址失败");
+      }
+    }, uiPrefix + "secondary");
+    showPanel("首页网址", "更换域名时可直接修改。该设置保存在本机，同包升级后仍会保留。", [input, row, reset]);
+  }
+
+  function showSettingsPanel() {
+    loadFavorites();
+    var list = document.createElement("div");
+    list.className = uiPrefix + "settings-list";
+    list.appendChild(makeSettingsItem("首页网址", "更换域名并保留同包升级能力", showHomeUrlPanel));
+    list.appendChild(makeSettingsItem("网页收藏", favorites.length + " 个收藏 · 查看、编辑与管理", showFavoritesPanel));
+    list.appendChild(makeSettingsItem("已屏蔽列表", rules.length + " 条规则 · 导入、导出与恢复", showRulesPanel));
+    list.appendChild(makeSettingsItem("网页字号", fontScale === "large" ? "大" : fontScale === "small" ? "小" : "默认", showFontPanel));
+    list.appendChild(makeSettingsItem(
+      "图片点击预览",
+      imageTapPreviewEnabled ? "当前网站已开启" : "当前网站未开启",
+      toggleImageTapPreference
+    ));
+    showPanel("设置", "当前网站：" + host + "\n收藏和首页网址属于整个 App；字号和屏蔽规则按域名保存。", [list]);
+  }
+
   function showMenu(x, y, target, suppressNextClick) {
     removeUi();
     suppressNextCloseClick = !!suppressNextClick;
@@ -898,12 +1190,6 @@
       items.push({
         label: "查看链接",
         action: function () { removeUi(); location.assign(linkToCopy); }
-      });
-    }
-    if (bridge.saveImageTapPreviewEnabled) {
-      items.push({
-        label: imageTapPreviewEnabled ? "关闭图片点击预览" : "开启图片点击预览",
-        action: toggleImageTapPreference
       });
     }
     if (imageToPreview) {
@@ -930,8 +1216,8 @@
     items = items.concat([
       { label: "屏蔽元素", requiresTarget: true, action: function () { if (lastTarget) startPicker(lastTarget); } },
       { label: "查看元素", requiresTarget: true, action: function () { if (lastTarget) inspectElement(lastTarget); } },
-      { label: "调整字号", action: function () { showFontPanel(); } },
-      { label: "已屏蔽列表", action: function () { showRulesPanel(); } }
+      { label: "收藏当前网页", action: addCurrentFavorite },
+      { label: "设置", action: showSettingsPanel }
     ]);
 
     items.forEach(function (item) {
@@ -1043,6 +1329,22 @@
       "." + uiPrefix + "textarea{box-sizing:border-box;width:100%;min-height:180px;border:1px solid #e5e5e5;border-radius:10px;background:#fafafa;color:#111;padding:10px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical;margin:0 0 10px}" +
       "." + uiPrefix + "action-row{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:0 0 10px}" +
       "." + uiPrefix + "action-row button{height:38px;border:0;border-radius:9px;font-size:13px;font-weight:600}" +
+      "." + uiPrefix + "settings-fields{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}" +
+      "." + uiPrefix + "settings-input{box-sizing:border-box;width:100%;height:44px;border:1px solid #ddd;border-radius:10px;background:#fff;color:#111;padding:0 11px;font:14px/1.4 system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0 0 10px}" +
+      "." + uiPrefix + "settings-fields ." + uiPrefix + "settings-input{margin:0}" +
+      "." + uiPrefix + "settings-list{display:flex;flex-direction:column;gap:8px}" +
+      "." + uiPrefix + "settings-item{display:flex;width:100%;flex-direction:column;gap:3px;text-align:left;border:1px solid #ececec;border-radius:11px;background:#fafafa;color:#111;padding:12px;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}" +
+      "." + uiPrefix + "settings-item:active,." + uiPrefix + "settings-item:hover{background:#f1f1f1}" +
+      "." + uiPrefix + "settings-title{font-size:14px;font-weight:700}" +
+      "." + uiPrefix + "settings-desc{font-size:12px;color:#777;line-height:1.4}" +
+      "." + uiPrefix + "favorite-list{display:flex;flex-direction:column;gap:8px}" +
+      "." + uiPrefix + "favorite-row{border:1px solid #ececec;border-radius:11px;background:#fafafa;padding:10px}" +
+      "." + uiPrefix + "favorite-title{font-size:14px;font-weight:700;color:#111;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      "." + uiPrefix + "favorite-url{font-size:11px;line-height:1.45;color:#777;word-break:break-all;margin-top:3px}" +
+      "." + uiPrefix + "favorite-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:9px}" +
+      "." + uiPrefix + "favorite-actions button{height:34px;border:0;border-radius:8px;background:#eee;color:#222;font-size:12px;font-weight:600}" +
+      "." + uiPrefix + "secondary{width:100%;height:38px;border:1px solid #ddd;border-radius:9px;background:#fff;color:#333;font-size:13px;font-weight:600}" +
+      "." + uiPrefix + "danger-action{background:#fff0f0!important;color:#c62828!important}" +
       "." + uiPrefix + "font-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}" +
       "." + uiPrefix + "font-row button{height:44px;border:0;border-radius:10px;background:#f2f2f2;color:#111;font-size:18px;font-weight:800}" +
       "." + uiPrefix + "primary{background:#111!important;color:#fff!important}" +
@@ -1121,6 +1423,7 @@
 
   function refreshFromNative() {
     loadRules();
+    loadFavorites();
     loadImageTapPreference();
     installUiCss();
     applyRules();

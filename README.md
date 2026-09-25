@@ -32,6 +32,11 @@
 | 键盘适配 | 软键盘弹出时页面自动上移，表单不被遮挡 |
 | 打包历史 | 记录最近打包记录，支持一键重新填入 |
 | 深色模式 | 跟随系统深色/浅色模式，支持手动切换 |
+| 可编辑包名 | 根据网址自动生成包名，也可切换为手动包名或一键重新生成 |
+| App 内设置 | 长按或右键打开设置，集中管理首页网址、收藏、字号和屏蔽规则 |
+| 网页收藏 | 收藏当前网页，并在设置中查看、编辑、打开或删除 |
+| 运行时换域名 | 在设置中修改首页网址，同包升级后继续保留，不必因域名变化重打包 |
+| 规则文件导出 | 将当前域名的元素屏蔽规则保存为本地 JSON 文件，也保留复制/导入方式 |
 
 ---
 
@@ -103,7 +108,6 @@ Pakr/
 | `KEYSTORE_PASSWORD` | Keystore 密码 |
 | `KEY_ALIAS` | Key 别名（默认 `release`） |
 | `KEY_PASSWORD` | Key 密码（同 Keystore 密码） |
-| `GH_PAT` | GitHub PAT（需要 `repo` + `workflow` 权限） |
 
 ### 第四步 — 部署到 Cloudflare Pages
 
@@ -122,9 +126,11 @@ Pakr/
    |--------|----|
    | `GITHUB_OWNER` | 你的 GitHub 用户名 |
    | `GITHUB_REPO` | `Pakr` |
-   | `GH_PAT` | 你的 GitHub PAT |
+   | `GH_PAT` | 你的 GitHub PAT（请使用加密 Secret） |
 
 4. **Save and Deploy**，部署完成后即可访问。
+
+> 修改 `GH_PAT` 后请重新部署一次生产环境。Production 与 Preview 的变量相互独立，至少要在 Production 中配置。
 
 ### 第五步 — 验证
 
@@ -159,8 +165,16 @@ GitHub Actions
 ## 注意事项
 
 - GitHub Actions 免费账号每月有 **2000 分钟**额度，单次构建约消耗 **3~5 分钟**
-- 未配置 Keystore Secrets 时自动使用临时 Debug Key 签名，**不同次打包签名不一致，无法升级覆盖安装**
+- 建议正式使用时配置并妥善备份 Keystore Secrets；未配置时会使用与“仓库 + 包名”绑定的确定性开发签名，适合测试，但不应替代自行保管的正式签名密钥
 - 打包历史记录保存在浏览器本地，清除缓存后会丢失
+
+### `Trigger failed` / `Bad credentials`
+
+这表示 Cloudflare Pages 已收到请求，但 GitHub 拒绝了工作流触发，并非 Gradle 编译错误。请在 Cloudflare Pages → Settings → Variables and Secrets 中更新 `GH_PAT`（或 `GITHUB_TOKEN`），确认令牌未过期、已授权当前仓库且具备 Actions 读写权限，然后重新部署。新版前端会直接显示 GitHub 返回的具体错误，不再只显示笼统的 `Trigger failed`。
+
+### 同包升级与域名更换
+
+升级安装必须同时保持 **相同包名** 与 **相同签名密钥**，并使用更高的 `versionCode`。网址仅是运行时配置，不需要参与应用身份判断。安装新版后，可在网页内长按或右键 → **设置** → **首页网址** 修改新域名；该设置存放在 Android 应用数据中，同包升级不会清除。若用户清除应用数据，则恢复为打包时的网址。
 
 ---
 
