@@ -43,10 +43,15 @@ class FakeElement {
   }
 
   closest(selector) {
-    if (selector !== "[data-pakr-ui='1']") return null;
     let node = this;
     while (node) {
-      if (node.dataset && node.dataset.pakrUi === "1") return node;
+      for (const part of selector.split(",").map((item) => item.trim())) {
+        if (part === "[data-pakr-ui='1']" && node.dataset?.pakrUi === "1") return node;
+        if (part === "[data-pakr-image-tap='navigate']" && node.dataset?.pakrImageTap === "navigate") return node;
+        if (part === "a[href]" && node.tagName === "A" && node.hasAttribute("href")) return node;
+        if (part === "button" && node.tagName === "BUTTON") return node;
+        if (part === "[role='button']" && node.getAttribute("role") === "button") return node;
+      }
       node = node.parentElement;
     }
     return null;
@@ -60,10 +65,20 @@ class FakeElement {
     return this.attributes[name] || "";
   }
 
+  hasAttribute(name) {
+    return Object.hasOwn(this.attributes, name);
+  }
+
   setAttribute(name, value) {
     this.attributes[name] = String(value);
     if (name === "id") this.id = String(value);
+    if (name === "href") this.href = String(value);
+    if (name === "src") this.src = String(value);
+    if (name === "role") this.role = String(value);
+    if (name === "data-pakr-image-tap") this.dataset.pakrImageTap = String(value);
   }
+
+  scrollIntoView() {}
 
   get previousElementSibling() {
     if (!this.parentElement) return null;
@@ -101,6 +116,7 @@ class FakeDocument {
   dispatch(type, event) {
     for (const listener of this.listeners.get(type) || []) {
       listener(event);
+      if (event.__immediateStopped) break;
     }
   }
 
@@ -130,15 +146,22 @@ class FakeDocument {
   }
 }
 
-function createFixture(runScript = true) {
+function createFixture(runScript = true, options = {}) {
   const document = new FakeDocument();
   const timerQueue = new Map();
+  const windowListeners = new Map();
   let nextTimerId = 1;
   let savedFavorites = "[]";
+  const previewedImages = [];
+  const migrationCalls = [];
 
   const context = {
     document,
-    location: { hostname: "example.com", href: "https://example.com/page" },
+    location: {
+      hostname: options.hostname || "example.com",
+      href: options.href || "https://example.com/page",
+      assign(url) { this.href = url; }
+    },
     URL,
     innerWidth: 800,
     innerHeight: 600,
@@ -152,6 +175,14 @@ function createFixture(runScript = true) {
     clearTimeout: (id) => {
       timerQueue.delete(id);
     },
+    addEventListener: (type, listener) => {
+      if (!windowListeners.has(type)) windowListeners.set(type, []);
+      windowListeners.get(type).push(listener);
+    },
+    removeEventListener: (type, listener) => {
+      if (!windowListeners.has(type)) return;
+      windowListeners.set(type, windowListeners.get(type).filter((item) => item !== listener));
+    },
     PakrElementBlocker: {
       getRules: () => "[]",
       saveRules: () => {},
@@ -160,15 +191,21 @@ function createFixture(runScript = true) {
         savedFavorites = json;
         return true;
       },
-      getHomeUrl: () => "https://example.com/",
+      getHomeUrl: () => options.homeUrl || "https://example.com/",
       getDefaultHomeUrl: () => "https://example.com/",
       saveHomeUrl: () => true,
       resetHomeUrl: () => true,
+      migrateRulesToUrl: (_token, sourceHost, targetUrl) => {
+        migrationCalls.push({ sourceHost, targetUrl });
+        return options.migratedRules || 0;
+      },
       exportJson: () => true,
+      getImageTapPreviewEnabled: () => !!options.imageTapPreviewEnabled,
+      saveImageTapPreviewEnabled: () => true,
       getFontScale: () => "normal",
       applyFontScale: () => {},
       toast: () => {},
-      previewImage: () => {}
+      previewImage: (url) => previewedImages.push(url)
     }
   };
   context.window = context;
@@ -205,11 +242,40 @@ function createFixture(runScript = true) {
       const menu = document.walk().find((element) => element.className === "pakr-blocker-menu");
       const button = menu && menu.children.find((element) => element.tagName === "BUTTON" && element.textContent === label);
       assert.ok(button, `menu button ${label} should exist`);
-      for (const listener of button.eventListeners.get("click") || []) listener({ stopPropagation() {} });
+      for (const listener of button.eventListeners.get("click") || []) {
+        listener({ preventDefault() {}, stopPropagation() {} });
+      }
+    },
+    clickMenuButtonThroughDocument(label) {
+      const menu = document.walk().find((element) => element.className === "pakr-blocker-menu");
+      const button = menu && menu.children.find((element) => element.tagName === "BUTTON" && element.textContent === label);
+      assert.ok(button, `menu button ${label} should exist`);
+      const event = {
+        target: button,
+        button: 0,
+        detail: 1,
+        ctrlKey: false,
+        metaKey: false,
+        shiftKey: false,
+        altKey: false,
+        preventDefault() { this.defaultPrevented = true; },
+        stopPropagation() { this.propagationStopped = true; },
+        stopImmediatePropagation() {
+          this.propagationStopped = true;
+          this.__immediateStopped = true;
+        }
+      };
+      document.dispatch("click", event);
+      if (!event.propagationStopped) {
+        for (const listener of button.eventListeners.get("click") || []) listener(event);
+      }
+      return event;
     },
     savedFavorites() {
       return JSON.parse(savedFavorites);
-    }
+    },
+    previewedImages,
+    migrationCalls
   };
 }
 
@@ -270,7 +336,7 @@ test("context menu exposes favorites and a consolidated settings screen", () => 
   const fixture = createFixture();
   fixture.context.window.PakrElementBlockerUI.openMenuAt(120, 180);
 
-  assert.ok(fixture.menuButtonLabels().includes("收藏当前网页"));
+  assert.ok(fixture.menuButtonLabels().includes("收藏网页"));
   assert.ok(fixture.menuButtonLabels().includes("设置"));
   assert.ok(!fixture.menuButtonLabels().includes("已屏蔽列表"));
 
@@ -284,10 +350,102 @@ test("context menu exposes favorites and a consolidated settings screen", () => 
 test("favorite action persists the current page through the native bridge", () => {
   const fixture = createFixture();
   fixture.context.window.PakrElementBlockerUI.openMenuAt(120, 180);
-  fixture.clickMenuButton("收藏当前网页");
+  fixture.clickMenuButton("收藏网页");
 
   assert.equal(fixture.savedFavorites().length, 1);
   assert.equal(fixture.savedFavorites()[0].url, "https://example.com/page");
+});
+
+test("a menu opened over linked text lets its first command run", () => {
+  const fixture = createFixture();
+  const link = new FakeElement("a", fixture.document);
+  link.setAttribute("href", "https://target.example/article");
+  const text = new FakeElement("span", fixture.document);
+  text.innerText = "linked text";
+  link.appendChild(text);
+  fixture.document.body.appendChild(link);
+
+  const contextMenuEvent = {
+    target: text,
+    clientX: 120,
+    clientY: 180,
+    preventDefault() {},
+    stopPropagation() {},
+    stopImmediatePropagation() { this.__immediateStopped = true; }
+  };
+  fixture.document.dispatch("contextmenu", contextMenuEvent);
+  fixture.runTimersThrough(0);
+  const clickEvent = fixture.clickMenuButtonThroughDocument("设置");
+
+  assert.equal(clickEvent.__immediateStopped, undefined);
+  const titles = fixture.document.walk()
+    .filter((element) => element.className === "pakr-blocker-settings-title")
+    .map((element) => element.textContent);
+  assert.ok(titles.includes("首页网址"));
+});
+
+test("opt-in image preview intercepts keyboard-style clicks on linked button images", () => {
+  const fixture = createFixture(true, { imageTapPreviewEnabled: true });
+  const link = new FakeElement("a", fixture.document);
+  link.setAttribute("href", "https://target.example/article");
+  link.setAttribute("role", "button");
+  const image = new FakeElement("img", fixture.document);
+  image.setAttribute("src", "https://cdn.example/cover.jpg");
+  image.currentSrc = "https://cdn.example/cover.jpg";
+  link.appendChild(image);
+  fixture.document.body.appendChild(link);
+
+  const clickEvent = {
+    target: image,
+    button: 0,
+    detail: 0,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    altKey: false,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.propagationStopped = true; },
+    stopImmediatePropagation() { this.__immediateStopped = true; }
+  };
+  fixture.document.dispatch("click", clickEvent);
+
+  assert.deepEqual(fixture.previewedImages, ["https://cdn.example/cover.jpg"]);
+  assert.equal(clickEvent.defaultPrevented, true);
+  assert.equal(clickEvent.__immediateStopped, true);
+});
+
+test("saving a replacement home URL migrates rules from the previously saved home domain", () => {
+  const fixture = createFixture(true, {
+    hostname: "article.example",
+    href: "https://article.example/story",
+    homeUrl: "https://old-home.example/start",
+    migratedRules: 2
+  });
+  fixture.context.window.PakrElementBlockerUI.openMenuAt(120, 180);
+  fixture.clickMenuButton("设置");
+
+  const homeItem = fixture.document.walk().find((element) =>
+    element.className === "pakr-blocker-settings-item" &&
+    element.children.some((child) => child.textContent === "首页网址")
+  );
+  assert.ok(homeItem);
+  for (const listener of homeItem.eventListeners.get("click") || []) listener({});
+
+  const input = fixture.document.walk().find((element) =>
+    element.tagName === "INPUT" && element.className === "pakr-blocker-settings-input"
+  );
+  assert.ok(input);
+  input.value = "https://new-home.example/welcome";
+  const save = fixture.document.walk().find((element) =>
+    element.tagName === "BUTTON" && element.textContent === "保存"
+  );
+  assert.ok(save);
+  for (const listener of save.eventListeners.get("click") || []) listener({});
+
+  assert.deepEqual(fixture.migrationCalls, [{
+    sourceHost: "old-home.example",
+    targetUrl: "https://new-home.example/welcome"
+  }]);
 });
 
 test("late native bridge can initialize after an earlier bridge-free attempt", () => {

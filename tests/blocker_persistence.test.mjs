@@ -25,7 +25,25 @@ test('early injection is feature gated and resumed pages are refreshed', () => {
 test('linked image override is per-site and opt-in with navigation escape hatches', () => {
   assert.match(main, /getBoolean\("\$\{normalizeRuleHost\(host\)\}:image_tap_preview", false\)/);
   assert.match(script, /imageTapPreviewEnabled = false/);
-  assert.match(script, /event\.detail === 0/);
+  assert.doesNotMatch(script, /event\.detail === 0/);
   assert.match(script, /data-pakr-image-tap='navigate'/);
   assert.match(script, /label: "查看链接"/);
+});
+
+test('home domain changes merge-copy blocking rules without deleting the old host', () => {
+  assert.match(main, /fun migrateRulesToUrl\(token: String, sourceHost: String, targetUrl: String\): Int/);
+  assert.match(main, /elementRuleStore\.mergeCopy/);
+  assert.match(store, /fun mergeCopy\(sourceHost: String, targetHost: String\): Int/);
+  assert.match(store, /selectors\.add\(rule\.getString\("selector"\)\)/);
+  assert.match(store, /if \(save\(targetHost, merged\.toString\(\)\)\) added else -1/);
+  assert.match(script, /migrateHomeRules\(currentUrl, url\)/);
+});
+
+test('settings panels follow the visual viewport and MainActivity requests resize for the IME', () => {
+  const manifest = readFileSync('app/src/main/AndroidManifest.xml', 'utf8');
+  assert.match(manifest, /android:name="\.MainActivity"[\s\S]*android:windowSoftInputMode="adjustResize"/);
+  assert.match(main, /SOFT_INPUT_ADJUST_RESIZE/);
+  assert.match(main, /ViewCompat\.requestApplyInsets\(swipeRefresh\)/);
+  assert.match(script, /window\.visualViewport/);
+  assert.match(script, /target\.scrollIntoView\(\{ block: "center", inline: "nearest" \}\)/);
 });

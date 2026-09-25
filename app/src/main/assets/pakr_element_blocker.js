@@ -36,6 +36,7 @@
   var pointerStartTarget = null;
   var pointerId = null;
   var suppressNextCloseClick = false;
+  var panelViewportListener = null;
   var highlightTimer = null;
   var picker = null;
   var styleId = "pakr-hide-style";
@@ -176,7 +177,7 @@
     favorites.unshift(favorite);
     if (!saveFavorites()) return;
     removeUi();
-    showToast(existing >= 0 ? "已更新收藏" : "已收藏当前网页");
+    showToast(existing >= 0 ? "已更新收藏" : "已收藏网页");
   }
 
   function loadImageTapPreference() {
@@ -298,6 +299,16 @@
   }
 
   function removeUi() {
+    if (panelViewportListener) {
+      try { window.removeEventListener("resize", panelViewportListener, false); } catch (_) {}
+      try {
+        if (window.visualViewport) {
+          window.visualViewport.removeEventListener("resize", panelViewportListener, false);
+          window.visualViewport.removeEventListener("scroll", panelViewportListener, false);
+        }
+      } catch (_) {}
+      panelViewportListener = null;
+    }
     document.querySelectorAll("[data-pakr-ui='1']").forEach(function (el) {
       el.remove();
     });
@@ -533,6 +544,16 @@
     return lines.join("\n");
   }
 
+  function fitPanelToVisibleViewport(mask, panel) {
+    var viewport = window.visualViewport;
+    var height = viewport && Number(viewport.height) > 0 ? Number(viewport.height) : innerHeight;
+    var top = viewport ? Math.max(0, Number(viewport.offsetTop) || 0) : 0;
+    mask.style.top = top + "px";
+    mask.style.bottom = "auto";
+    mask.style.height = Math.max(1, height) + "px";
+    panel.style.maxHeight = Math.max(160, height - 12) + "px";
+  }
+
   function showPanel(title, body, actions) {
     removeUi();
     var mask = document.createElement("div");
@@ -566,6 +587,25 @@
     });
     mask.appendChild(panel);
     document.documentElement.appendChild(mask);
+
+    panelViewportListener = function () { fitPanelToVisibleViewport(mask, panel); };
+    window.addEventListener("resize", panelViewportListener, false);
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", panelViewportListener, false);
+      window.visualViewport.addEventListener("scroll", panelViewportListener, false);
+    }
+    panel.addEventListener("focusin", function (event) {
+      var target = event.target;
+      var tag = target && target.tagName ? target.tagName.toLowerCase() : "";
+      if (tag !== "input" && tag !== "textarea" && tag !== "select") return;
+      setTimeout(function () {
+        fitPanelToVisibleViewport(mask, panel);
+        try { target.scrollIntoView({ block: "center", inline: "nearest" }); } catch (_) {
+          try { target.scrollIntoView(false); } catch (_) {}
+        }
+      }, 120);
+    });
+    fitPanelToVisibleViewport(mask, panel);
   }
 
   function inspectElement(el) {
@@ -1061,7 +1101,7 @@
     var actions = [];
     var addRow = document.createElement("div");
     addRow.className = uiPrefix + "action-row";
-    addRow.appendChild(makeActionButton("收藏当前网页", addCurrentFavorite, uiPrefix + "primary"));
+    addRow.appendChild(makeActionButton("收藏网页", addCurrentFavorite, uiPrefix + "primary"));
     addRow.appendChild(makeActionButton("手动添加", function () { showFavoriteEditor(-1); }));
     actions.push(addRow);
 
@@ -1103,7 +1143,7 @@
 
     var body = favorites.length
       ? "共 " + favorites.length + " 个收藏。打开、编辑和删除都在这里管理。"
-      : (favoritesLoadIssue || "还没有收藏网页。可在任意页面长按后收藏当前网页。");
+      : (favoritesLoadIssue || "还没有收藏网页。可在任意页面长按后收藏网页。");
     showPanel("网页收藏", body, actions);
   }
 
@@ -1121,6 +1161,16 @@
     var input = makeSettingsInput(currentUrl, "https://new-domain.example");
     input.type = "url";
 
+    function migrateHomeRules(sourceUrl, targetUrl) {
+      try {
+        if (!bridge.migrateRulesToUrl) return 0;
+        var sourceHost = new URL(sourceUrl).hostname || host;
+        return Number(bridge.migrateRulesToUrl(nativeToken, sourceHost, targetUrl));
+      } catch (_) {
+        return -1;
+      }
+    }
+
     function saveHome(openNow) {
       var url = normalizeFavoriteUrl(input.value);
       if (!url) {
@@ -1133,7 +1183,12 @@
         showToast("首页网址保存失败");
         return;
       }
-      showToast(openNow ? "首页网址已更新，正在打开" : "首页网址已更新");
+      var migratedRules = migrateHomeRules(currentUrl, url);
+      currentUrl = url;
+      var message = openNow ? "首页网址已更新，正在打开" : "首页网址已更新";
+      if (migratedRules > 0) message += "，已迁移 " + migratedRules + " 条屏蔽规则";
+      else if (migratedRules < 0) message += "，但屏蔽规则迁移失败";
+      showToast(message);
       if (openNow) {
         removeUi();
         location.assign(url);
@@ -1148,13 +1203,18 @@
     var reset = makeActionButton("恢复打包时的网址", function () {
       try {
         if (!bridge.resetHomeUrl || bridge.resetHomeUrl(nativeToken) === false) throw new Error("reset failed");
+        var migratedRules = migrateHomeRules(currentUrl, defaultUrl);
+        currentUrl = defaultUrl;
         input.value = defaultUrl;
-        showToast("已恢复打包时的网址");
+        var message = "已恢复打包时的网址";
+        if (migratedRules > 0) message += "，已迁移 " + migratedRules + " 条屏蔽规则";
+        else if (migratedRules < 0) message += "，但屏蔽规则迁移失败";
+        showToast(message);
       } catch (_) {
         showToast("恢复默认网址失败");
       }
     }, uiPrefix + "secondary");
-    showPanel("首页网址", "更换域名时可直接修改。该设置保存在本机，同包升级后仍会保留。", [input, row, reset]);
+    showPanel("首页网址", "更换域名时可直接修改。保存时会把当前域名的屏蔽规则合并到新域名；旧域名规则仍会保留。", [input, row, reset]);
   }
 
   function showSettingsPanel() {
@@ -1170,7 +1230,7 @@
       imageTapPreviewEnabled ? "当前网站已开启" : "当前网站未开启",
       toggleImageTapPreference
     ));
-    showPanel("设置", "当前网站：" + host + "\n收藏和首页网址属于整个 App；字号和屏蔽规则按域名保存。", [list]);
+    showPanel("设置", "当前网站：" + host + "\n收藏和首页网址属于整个 App；字号和屏蔽规则按域名保存，更换首页域名时会迁移屏蔽规则。", [list]);
   }
 
   function showMenu(x, y, target, suppressNextClick) {
@@ -1216,7 +1276,7 @@
     items = items.concat([
       { label: "屏蔽元素", requiresTarget: true, action: function () { if (lastTarget) startPicker(lastTarget); } },
       { label: "查看元素", requiresTarget: true, action: function () { if (lastTarget) inspectElement(lastTarget); } },
-      { label: "收藏当前网页", action: addCurrentFavorite },
+      { label: "收藏网页", action: addCurrentFavorite },
       { label: "设置", action: showSettingsPanel }
     ]);
 
@@ -1225,6 +1285,7 @@
       button.textContent = item.label;
       button.disabled = item.requiresTarget && !lastTarget;
       button.addEventListener("click", function (event) {
+        event.preventDefault();
         event.stopPropagation();
         item.action();
       });
@@ -1237,10 +1298,15 @@
     menu.style.top = Math.max(10, Math.min(y, innerHeight - rect.height - 10)) + "px";
     setTimeout(function () {
       var closeOnDocumentClick = function (event) {
+        if (isUiElement(event.target)) {
+          suppressNextCloseClick = false;
+          return;
+        }
         if (suppressNextCloseClick) {
           suppressNextCloseClick = false;
           try { event.preventDefault(); } catch (_) {}
           try { event.stopPropagation(); } catch (_) {}
+          try { event.stopImmediatePropagation(); } catch (_) {}
           setTimeout(function () {
             document.addEventListener("click", closeOnDocumentClick, { once: true, capture: true });
           }, 0);
@@ -1322,7 +1388,7 @@
       "." + uiPrefix + "menu button:disabled{color:#aaa}" +
       "." + uiPrefix + "menu button:not(:disabled):active,." + uiPrefix + "menu button:not(:disabled):hover{background:#f2f2f2}" +
       "." + uiPrefix + "mask{position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.28);display:flex;align-items:flex-end;justify-content:center;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}" +
-      "." + uiPrefix + "panel{width:min(520px,100%);max-height:76vh;overflow:auto;background:#fff;color:#111;border-radius:18px 18px 0 0;box-shadow:0 -10px 35px rgba(0,0,0,.18);padding:16px}" +
+      "." + uiPrefix + "panel{box-sizing:border-box;width:min(520px,100%);max-height:76vh;overflow:auto;background:#fff;color:#111;border-radius:18px 18px 0 0;box-shadow:0 -10px 35px rgba(0,0,0,.18);padding:16px}" +
       "." + uiPrefix + "head{display:flex;align-items:center;justify-content:space-between;font-size:16px;font-weight:700;margin-bottom:10px}" +
       "." + uiPrefix + "close{width:32px;height:32px;border-radius:50%;border:0;background:#f3f3f3;color:#333;font-size:18px;line-height:1}" +
       "." + uiPrefix + "body{white-space:pre-wrap;word-break:break-word;background:#f7f7f7;border-radius:10px;padding:12px;margin:0 0 10px;color:#333;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}" +
@@ -1367,7 +1433,9 @@
   document.addEventListener("contextmenu", function (event) {
     if (picker || isUiElement(event.target)) return;
     event.preventDefault();
-    showMenu(event.clientX, event.clientY, event.target, false);
+    event.stopPropagation();
+    if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+    showMenu(event.clientX, event.clientY, event.target, true);
   }, true);
 
   document.addEventListener("touchstart", function (event) {
@@ -1445,7 +1513,7 @@
   function linkedImageTarget(target) {
     var el = normalizeElement(target);
     if (!el || isUiElement(el) || !el.tagName || el.tagName.toLowerCase() !== "img") return null;
-    if (!el.closest || el.closest("button,[role='button'],[data-pakr-image-tap='navigate']")) return null;
+    if (!el.closest || el.closest("[data-pakr-image-tap='navigate']")) return null;
     var link = el.closest("a[href]");
     if (!link || link.hasAttribute("download") || !/^https?:\/\//i.test(link.href)) return null;
     var src = absoluteUrlFor(el.currentSrc || el.src || el.getAttribute("src"));
@@ -1477,7 +1545,7 @@
   }, true);
   document.addEventListener("click", function (event) {
     if (!imageTapPreviewEnabled || picker || suppressNextCloseClick || isUiElement(event.target)) return;
-    if (event.button > 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.detail === 0) return;
+    if (event.button > 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
     if (imageGesture && imageGesture.target === event.target &&
         Date.now() - (imageGesture.endedAt || imageGesture.at) < 1200 && imageGesture.cancelled) return;
     var image = linkedImageTarget(event.target);

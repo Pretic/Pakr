@@ -40,6 +40,38 @@ internal class ElementRuleStore(context: Context) {
         }
     }
 
+    /** Copies rules into a new host without removing the old host's rules. */
+    @Synchronized
+    fun mergeCopy(sourceHost: String, targetHost: String): Int {
+        if (sourceHost == targetHost) return 0
+        return try {
+            val source = JSONArray(load(sourceHost))
+            val target = JSONArray(load(targetHost))
+            if (!isValid(source.toString()) || !isValid(target.toString())) return -1
+
+            val merged = JSONArray()
+            val selectors = HashSet<String>()
+            for (index in 0 until target.length()) {
+                val rule = target.getJSONObject(index)
+                merged.put(rule)
+                selectors.add(rule.getString("selector"))
+            }
+
+            var added = 0
+            for (index in 0 until source.length()) {
+                if (merged.length() >= 200) break
+                val rule = source.getJSONObject(index)
+                if (selectors.add(rule.getString("selector"))) {
+                    merged.put(rule)
+                    added += 1
+                }
+            }
+            if (added == 0) 0 else if (save(targetHost, merged.toString())) added else -1
+        } catch (_: Exception) {
+            -1
+        }
+    }
+
     private fun isValid(json: String): Boolean {
         if (json.length > 512_000) return false
         return try {

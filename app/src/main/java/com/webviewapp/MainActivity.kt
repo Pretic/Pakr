@@ -95,6 +95,7 @@ class MainActivity : AppCompatActivity() {
             androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_NO
         )
         super.onCreate(savedInstanceState)
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         if (NO_SCREENSHOT.equals("true", ignoreCase = true)) {
             window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         }
@@ -297,15 +298,18 @@ class MainActivity : AppCompatActivity() {
                 try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } catch (_: Exception) {}
             }
         }
-        // 键盘弹出适配：FLAG_FULLSCREEN 下 adjustResize 失效，手动监听 Insets
+        // 键盘弹出适配：adjustResize 为主，全屏模式下再用 IME Insets 兜底缩小 WebView。
         androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(swipeRefresh) { view, insets ->
             val imeInsets = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime())
-            val lp = view.layoutParams as android.widget.FrameLayout.LayoutParams
-            lp.bottomMargin = imeInsets.bottom
-            view.layoutParams = lp
-            webView.setPadding(0, 0, 0, 0)
+            val fallbackBottom = if (WINDOW_MODE.equals("true", ignoreCase = true)) 0 else imeInsets.bottom
+            val lp = view.layoutParams
+            if (lp is android.widget.FrameLayout.LayoutParams && lp.bottomMargin != fallbackBottom) {
+                lp.bottomMargin = fallbackBottom
+                view.layoutParams = lp
+            }
             insets
         }
+        androidx.core.view.ViewCompat.requestApplyInsets(swipeRefresh)
 
         webView.addJavascriptInterface(object {
             @JavascriptInterface
@@ -325,6 +329,21 @@ class MainActivity : AppCompatActivity() {
             @JavascriptInterface
             fun saveRules(host: String, rulesJson: String): Boolean {
                 return elementRuleStore.save(normalizeRuleHost(host), rulesJson)
+            }
+
+            @JavascriptInterface
+            fun migrateRulesToUrl(token: String, sourceHost: String, targetUrl: String): Int {
+                if (!isBridgeAuthorized(token)) return -1
+                val targetHost = try {
+                    Uri.parse(targetUrl).host.orEmpty()
+                } catch (_: Exception) {
+                    ""
+                }
+                if (targetHost.isBlank()) return -1
+                return elementRuleStore.mergeCopy(
+                    normalizeRuleHost(sourceHost),
+                    normalizeRuleHost(targetHost)
+                )
             }
 
             @JavascriptInterface

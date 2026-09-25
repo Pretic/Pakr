@@ -39,7 +39,7 @@
             android:exported="false"
             android:screenOrientation="fullUser"
             android:windowLayoutInDisplayCutoutMode="shortEdges"
-            android:windowSoftInputMode="adjustNothing" />
+            android:windowSoftInputMode="adjustResize" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

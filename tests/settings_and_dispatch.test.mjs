@@ -94,7 +94,7 @@ test("worker maps a live GitHub 401 and accepts the dispatch response with a run
 });
 
 test("right-click settings consolidate rules, favorites, and the mutable home URL", () => {
-  assert.match(blocker, /label: "收藏当前网页"/);
+  assert.match(blocker, /label: "收藏网页"/);
   assert.match(blocker, /label: "设置"/);
   assert.match(blocker, /function showSettingsPanel\(\)/);
   assert.match(blocker, /makeSettingsItem\("已屏蔽列表"/);
